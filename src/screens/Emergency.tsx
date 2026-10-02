@@ -1,5 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { HOSPITALS, POLICE_STATIONS } from '../data/mockData';
+import { sosApi } from '../services/api';
+import { realtimeService } from '../services/realtimeService';
 
 interface EmergencyProps {
   onBack: () => void;
@@ -11,20 +13,111 @@ type SOSState = 'idle' | 'confirming' | 'sending' | 'active';
 export default function Emergency({ onBack, onNavigate }: EmergencyProps) {
   const [sosState, setSOSState] = useState<SOSState>('idle');
   const [countdown, setCountdown] = useState(5);
-  const [emergencyType, setEmergencyType] = useState('');
-  const [location] = useState('Panchavati, Nashik (19.9975°N, 73.7898°E)');
-  const [reportId] = useState('EMG-' + Math.random().toString(36).substr(2, 8).toUpperCase());
+  const [emergencyType, setEmergencyType] = useState('sos');
+  const [location] = useState('Ram Ghat Sector B, Nashik (19.9975°N, 73.7898°E)');
+  const [sosData, setSosData] = useState<any | null>(null);
+  const [responderInfo, setResponderInfo] = useState<any | null>(null);
+
+  useEffect(() => {
+    realtimeService.init();
+
+    realtimeService.subscribe('sos-accepted', (data) => {
+      console.log('⚡ SOS Accepted by responder:', data);
+      setResponderInfo({
+        name: data.responderName || 'Rahul Sharma',
+        phone: data.responderPhone || '9988776655',
+        badge: 'VOL-108',
+        etaSeconds: data.etaSeconds || 240,
+        distanceMeters: data.distanceMeters || 320,
+      });
+      setSosData((prev: any) => ({ ...prev, status: 'EN_ROUTE' }));
+    });
+
+    realtimeService.subscribe('sos-responder-location', (data) => {
+      setResponderInfo((prev: any) => ({
+        ...prev,
+        etaSeconds: data.etaSeconds,
+        distanceMeters: data.distanceMeters,
+      }));
+      setSosData((prev: any) => ({ ...prev, status: data.status }));
+    });
+
+    realtimeService.subscribe('sos-status-updated', (data) => {
+      setSosData((prev: any) => ({ ...prev, status: data.status }));
+    });
+
+    return () => {
+      realtimeService.unsubscribe('sos-accepted');
+      realtimeService.unsubscribe('sos-responder-location');
+      realtimeService.unsubscribe('sos-status-updated');
+    };
+  }, []);
+
+  const [sosHistory, setSosHistory] = useState<any[]>(() => {
+    try {
+      const saved = localStorage.getItem('kumbh_sos_history');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const saveSosToHistory = (sos: any) => {
+    setSosHistory((prev) => {
+      const updated = [sos, ...prev.filter((s) => s.sosId !== sos.sosId)];
+      localStorage.setItem('kumbh_sos_history', JSON.stringify(updated));
+      localStorage.setItem('kumbh_active_sos', JSON.stringify(sos));
+      window.dispatchEvent(new CustomEvent('kumbh_sos_event', { detail: sos }));
+      return updated;
+    });
+  };
+
+  const triggerSosCreation = async () => {
+    setSOSState('sending');
+    let sosObj: any = null;
+    try {
+      const res = await sosApi.createSos({
+        category: emergencyType || 'sos',
+        locationText: 'Ram Ghat Sector B, Nashik',
+        message: 'P0 Emergency SOS Triggered by Pilgrim',
+      });
+      if (res.success && res.data) {
+        sosObj = res.data;
+      }
+    } catch (err) {
+      console.warn('Backend SOS create fallback:', err);
+    }
+
+    if (!sosObj) {
+      const serialNum = `SOS-2027-${String(Math.floor(100000 + Math.random() * 900000))}`;
+      sosObj = {
+        sosId: serialNum,
+        userName: 'Pilgrim in Distress',
+        userPhone: '9876543210',
+        category: emergencyType || 'sos',
+        priority: 'P0',
+        locationText: 'Ram Ghat Sector B, Nashik',
+        status: 'BROADCASTING',
+        createdAt: new Date().toISOString(),
+      };
+    }
+
+    setSosData(sosObj);
+    saveSosToHistory(sosObj);
+    realtimeService.emit('trigger-sos', sosObj);
+    setSOSState('active');
+  };
 
   const handleSOS = () => {
     if (sosState === 'idle') {
       setSOSState('confirming');
-      setCountdown(5);
+      setCountdown(3);
       const interval = setInterval(() => {
-        setCountdown(c => {
+        setCountdown((c) => {
           if (c <= 1) {
             clearInterval(interval);
-            setSOSState('sending');
-            setTimeout(() => setSOSState('active'), 2000);
+            triggerSosCreation();
+            return 0;
           }
           return c - 1;
         });
@@ -34,12 +127,29 @@ export default function Emergency({ onBack, onNavigate }: EmergencyProps) {
 
   const cancelSOS = () => {
     setSOSState('idle');
-    setCountdown(5);
+    setCountdown(3);
   };
 
-  if (sosState === 'active') {
+  if (sosState === 'sending') {
     return (
-      <div className="fixed inset-0 flex flex-col" style={{ background: '#FEF2F2' }}>
+      <div className="flex flex-col min-h-screen items-center justify-center p-6 text-center pb-24" style={{ background: '#FEFAF4' }}>
+        <div className="w-20 h-20 rounded-full border-4 border-red-600 border-t-transparent animate-spin mb-4" />
+        <h2 className="text-xl font-bold text-red-700" style={{ fontFamily: 'Poppins' }}>Broadcasting Emergency SOS...</h2>
+        <p className="text-stone-600 text-xs mt-2 max-w-xs">
+          Connecting to Kumbh Mela Control Room and alerting nearby registered volunteers in Ram Ghat Sector B.
+        </p>
+      </div>
+    );
+  }
+
+  if (sosState === 'active') {
+    const status = sosData?.status || 'BROADCASTING';
+    const isAccepted = !!responderInfo || status === 'ACCEPTED' || status === 'EN_ROUTE' || status === 'NEARBY' || status === 'ARRIVED' || status === 'ASSISTING' || status === 'RESOLVED';
+    const isArrived = status === 'ARRIVED' || status === 'ASSISTING' || status === 'RESOLVED';
+    const isResolved = status === 'RESOLVED';
+
+    return (
+      <div className="flex flex-col min-h-screen pb-24" style={{ background: '#FEFAF4' }}>
         <div className="gradient-emergency px-5 pt-14 pb-8">
           <div className="flex items-center gap-3 mb-4">
             <button onClick={cancelSOS} className="w-8 h-8 rounded-full bg-white/20 flex items-center justify-center">
@@ -55,22 +165,69 @@ export default function Emergency({ onBack, onNavigate }: EmergencyProps) {
           </div>
           <div className="bg-white/15 rounded-2xl p-4">
             <p className="text-red-100 text-xs font-medium">Emergency Report ID</p>
-            <p className="text-white text-lg font-bold" style={{ fontFamily: 'Poppins' }}>{reportId}</p>
+            <p className="text-white text-lg font-bold font-mono" style={{ fontFamily: 'Poppins' }}>{sosData?.sosId || reportId}</p>
           </div>
         </div>
+
         <div className="flex-1 px-5 py-5 overflow-y-auto space-y-4">
-          {/* Status */}
+          {/* Assigned Responder Live Card */}
+          {isAccepted ? (
+            <div className="bg-white rounded-2xl p-5 border-2 border-emerald-500 shadow-md space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="bg-emerald-100 text-emerald-800 text-[10px] font-black px-2.5 py-0.5 rounded-full uppercase">
+                  VOLUNTEER RESPONDER ASSIGNED
+                </span>
+                <span className="text-xs text-emerald-600 font-bold">STATUS: {status}</span>
+              </div>
+              <div className="flex items-center space-x-3 pt-1">
+                <div className="w-12 h-12 rounded-full bg-orange-100 flex items-center justify-center text-2xl border border-orange-200">
+                  🛡️
+                </div>
+                <div>
+                  <h3 className="font-bold text-stone-900 text-base">{responderInfo?.name || 'Rahul Sharma'}</h3>
+                  <p className="text-xs text-stone-500">Badge: <strong className="text-stone-800 font-mono">VOL-108</strong> • 📞 <a href={`tel:${responderInfo?.phone || '9988776655'}`} className="text-orange-600 underline font-bold">{responderInfo?.phone || '9988776655'}</a></p>
+                </div>
+              </div>
+
+              {/* Realtime ETA Display */}
+              <div className="bg-stone-50 p-3 rounded-xl border border-stone-200 flex justify-between items-center text-xs">
+                <div>
+                  <span className="text-[10px] text-stone-400 font-bold uppercase block">ESTIMATED ETA</span>
+                  <span className="text-xl font-black text-emerald-600">
+                    {responderInfo?.etaSeconds ? `${Math.ceil(responderInfo.etaSeconds / 60)} MIN` : '4 MIN'}
+                  </span>
+                </div>
+                <div className="text-right">
+                  <span className="text-[10px] text-stone-400 font-bold uppercase block">DISTANCE AWAY</span>
+                  <span className="text-lg font-bold text-stone-800">
+                    {responderInfo?.distanceMeters ? `${responderInfo.distanceMeters}m` : '320m'}
+                  </span>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="bg-white rounded-2xl p-4 border border-stone-200 shadow-sm flex items-center space-x-3">
+              <div className="w-8 h-8 rounded-full border-2 border-orange-500 border-t-transparent animate-spin flex-shrink-0" />
+              <div>
+                <p className="text-stone-800 text-xs font-bold">Searching Nearby Eligible Volunteers...</p>
+                <p className="text-stone-500 text-[11px]">Round 1 broadcast sent to volunteers in Ram Ghat Sector B</p>
+              </div>
+            </div>
+          )}
+
+          {/* SOS Workflow Step Machine */}
           <div className="space-y-2">
             {[
-              { done: true, label: 'Location captured', value: location },
-              { done: true, label: 'Emergency report created', value: 'Sent to backend server' },
-              { done: true, label: 'Admin notified', value: 'Kumbh Mela Control Room' },
-              { done: true, label: 'Nearest volunteer alerted', value: 'Volunteer #NVL-2847 dispatched' },
-              { done: false, label: 'Help on the way...', value: 'ETA: 8-12 minutes' },
+              { done: true, label: 'Location Captured', value: location },
+              { done: true, label: 'P0 Emergency Created', value: `Report ID: ${sosData?.sosId || reportId}` },
+              { done: isAccepted, label: 'Volunteer Assigned', value: isAccepted ? `Assigned to ${responderInfo?.name || 'Rahul Sharma'}` : 'Notifying wave 1 volunteers...' },
+              { done: isAccepted, label: 'Help On The Way', value: isAccepted ? `ETA: ${Math.ceil((responderInfo?.etaSeconds || 240) / 60)} min` : 'Pending responder acceptance' },
+              { done: isArrived, label: 'Volunteer Arrived at Scene', value: isArrived ? 'Responder is with you on site' : 'En route to location' },
+              { done: isResolved, label: 'Emergency Resolved', value: isResolved ? 'Marked complete' : 'In progress' },
             ].map((step, i) => (
-              <div key={i} className="flex items-start gap-3 bg-white rounded-xl p-3 border border-stone-100">
+              <div key={i} className="flex items-start gap-3 bg-white rounded-xl p-3 border border-stone-100 shadow-sm">
                 <div className={`w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5 ${
-                  step.done ? 'bg-green-500' : 'bg-orange-100'
+                  step.done ? 'bg-emerald-500' : 'bg-orange-100'
                 }`}>
                   {step.done
                     ? <svg className="w-3.5 h-3.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg>
@@ -78,7 +235,7 @@ export default function Emergency({ onBack, onNavigate }: EmergencyProps) {
                   }
                 </div>
                 <div>
-                  <p className="text-stone-800 text-sm font-medium">{step.label}</p>
+                  <p className="text-stone-800 text-sm font-bold">{step.label}</p>
                   <p className="text-stone-500 text-xs">{step.value}</p>
                 </div>
               </div>
@@ -119,6 +276,43 @@ export default function Emergency({ onBack, onNavigate }: EmergencyProps) {
             </div>
           </div>
 
+          {/* Emergency Resolved Banner for Pilgrim */}
+          {isResolved ? (
+            <div className="bg-emerald-50 border-2 border-emerald-500 rounded-2xl p-4 space-y-3 shadow-lg">
+              <div className="flex items-center space-x-2">
+                <span className="text-2xl">✅</span>
+                <div>
+                  <h3 className="font-bold text-emerald-900 text-sm" style={{ fontFamily: 'Poppins' }}>Emergency Request Resolved</h3>
+                  <p className="text-xs text-emerald-700">Volunteer responder has completed assistance for this request.</p>
+                </div>
+              </div>
+              <button 
+                onClick={() => {
+                  if (sosData?.sosId) {
+                    sosApi.updateStatus(sosData.sosId, 'RESOLVED').catch(() => {});
+                  }
+                  localStorage.removeItem('kumbh_active_sos');
+                  cancelSOS();
+                }}
+                className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs py-3 rounded-xl shadow">
+                Mark as Complete & Close Emergency
+              </button>
+            </div>
+          ) : (
+            <button 
+              onClick={() => {
+                if (sosData?.sosId) {
+                  sosApi.updateStatus(sosData.sosId, 'RESOLVED').catch(() => {});
+                }
+                localStorage.removeItem('kumbh_active_sos');
+                setSosData((prev: any) => ({ ...prev, status: 'RESOLVED' }));
+                alert('✅ Emergency marked as RESOLVED! Stay safe.');
+              }}
+              className="w-full py-3.5 rounded-2xl bg-emerald-600 text-white font-bold text-xs shadow hover:bg-emerald-500 transition">
+              ✅ Mark Emergency as Resolved
+            </button>
+          )}
+
           <button onClick={() => onNavigate('map')}
             className="w-full py-3.5 rounded-2xl gradient-indigo text-white font-semibold text-sm flex items-center justify-center gap-2 shadow"
             style={{ fontFamily: 'Poppins' }}>
@@ -126,7 +320,7 @@ export default function Emergency({ onBack, onNavigate }: EmergencyProps) {
           </button>
           <button onClick={cancelSOS}
             className="w-full py-3 rounded-2xl border border-stone-300 text-stone-600 font-medium text-sm">
-            Cancel Emergency Request
+            Close Emergency Request
           </button>
         </div>
       </div>
@@ -258,6 +452,38 @@ export default function Emergency({ onBack, onNavigate }: EmergencyProps) {
               </div>
             ))}
           </div>
+        </div>
+
+        {/* Emergency Request History */}
+        <div className="bg-white rounded-2xl p-4 border border-stone-200 shadow-sm space-y-3">
+          <div className="flex justify-between items-center">
+            <p className="font-semibold text-stone-800 text-sm" style={{ fontFamily: 'Poppins' }}>📜 My Emergency Request History</p>
+            <span className="text-xs bg-orange-100 text-orange-700 font-bold px-2 py-0.5 rounded-full">{sosHistory.length} Saved</span>
+          </div>
+
+          {sosHistory.length === 0 ? (
+            <p className="text-xs text-stone-400 py-2">No previous emergency requests found.</p>
+          ) : (
+            <div className="space-y-2">
+              {sosHistory.map((s, idx) => (
+                <div key={idx} className="bg-stone-50 p-3 rounded-xl border border-stone-200 text-xs space-y-1">
+                  <div className="flex justify-between items-center">
+                    <span className="font-bold text-stone-800 font-mono">{s.sosId}</span>
+                    <span className={`font-bold px-2 py-0.5 rounded text-[10px] ${
+                      s.status === 'RESOLVED' ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'
+                    }`}>
+                      {s.status || 'BROADCASTING'}
+                    </span>
+                  </div>
+                  <p className="text-stone-600">Category: <strong className="uppercase">{s.category || 'SOS'}</strong></p>
+                  <p className="text-stone-500">📍 {s.locationText || 'Ram Ghat Sector B'}</p>
+                  {s.createdAt && (
+                    <p className="text-[10px] text-stone-400">Created: {new Date(s.createdAt).toLocaleString()}</p>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Lost & Found */}

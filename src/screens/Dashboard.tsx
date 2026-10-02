@@ -194,7 +194,7 @@ export default function Dashboard({ user, onNavigate }: DashboardProps) {
             {PLACES.slice(0, 5).map(place => {
               const info = CROWD_LABELS[place.crowdLevel];
               return (
-                <button key={place.id} onClick={() => onNavigate('placeDetail', place)}
+                <button key={place.id} onClick={() => onNavigate('placeDetail', { placeId: place.id })}
                   className="flex-shrink-0 w-44 bg-white rounded-2xl overflow-hidden border border-stone-100 shadow-sm text-left category-card">
                   <div className="relative h-28 bg-stone-200 overflow-hidden">
                     <img src={place.images[0]} alt={place.name} className="w-full h-full object-cover" />

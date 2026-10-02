@@ -1,9 +1,10 @@
 import React, { useState, useMemo } from 'react';
-import { PLACES, CATEGORIES } from '../data/mockData';
+import { MAP_MARKERS, PLACES, CATEGORIES } from '../data/mockData';
 
 interface DiscoveryProps {
   onNavigate: (screen: string, params?: unknown) => void;
   onBack: () => void;
+  initialPlaceId?: string;
 }
 
 const CROWD_LABELS: Record<string, { label: string; bg: string; text: string }> = {
@@ -13,12 +14,14 @@ const CROWD_LABELS: Record<string, { label: string; bg: string; text: string }> 
   critical: { label: 'Critical', bg: '#FEE2E2', text: '#DC2626' },
 };
 
-export default function Discovery({ onNavigate, onBack }: DiscoveryProps) {
+export default function Discovery({ onNavigate, onBack, initialPlaceId }: DiscoveryProps) {
   const [search, setSearch] = useState('');
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('list');
   const [savedPlaces, setSavedPlaces] = useState<Set<string>>(new Set(['p2']));
-  const [selectedPlace, setSelectedPlace] = useState<typeof PLACES[0] | null>(null);
+  const [selectedPlace, setSelectedPlace] = useState<typeof PLACES[0] | null>(() =>
+    PLACES.find((place) => place.id === initialPlaceId) ?? null,
+  );
 
   const filtered = useMemo(() => {
     return PLACES.filter(p => {
@@ -42,7 +45,7 @@ export default function Discovery({ onNavigate, onBack }: DiscoveryProps) {
   if (selectedPlace) {
     return <PlaceDetail place={selectedPlace} saved={savedPlaces.has(selectedPlace.id)}
       onToggleSave={() => toggleSave(selectedPlace.id)}
-      onBack={() => setSelectedPlace(null)}
+      onBack={() => initialPlaceId ? onBack() : setSelectedPlace(null)}
       onNavigate={onNavigate} />;
   }
 
@@ -187,6 +190,32 @@ export default function Discovery({ onNavigate, onBack }: DiscoveryProps) {
           );
         })}
       </div>
+
+      <section className="px-5 pt-6" aria-labelledby="explore-map-locations">
+        <div className="mb-3 flex items-center justify-between">
+          <div>
+            <h2 id="explore-map-locations" className="text-sm font-bold text-stone-800">Important locations & services</h2>
+            <p className="mt-0.5 text-[11px] text-stone-500">Sacred sites, ghats, heritage places, and visitor support</p>
+          </div>
+          <button type="button" onClick={() => onNavigate('map')} className="text-xs font-semibold text-orange-600">Open map →</button>
+        </div>
+        <div className="grid grid-cols-1 gap-2">
+          {MAP_MARKERS.map((marker) => {
+            const icon = marker.type === 'hospital' ? '🏥' : marker.type === 'police' ? '🚓' : marker.type === 'parking' ? '🅿️' : marker.type === 'ghat' ? '🌊' : marker.type === 'cave' ? '🪨' : marker.type === 'heritage' ? '🏛️' : marker.type === 'temple' ? '🛕' : '🙏';
+            return (
+              <button key={marker.id} type="button"
+                onClick={() => onNavigate('map', { destination: { lat: marker.lat, lng: marker.lng, name: marker.name } })}
+                className="flex items-center justify-between rounded-xl border border-stone-200 bg-white px-3 py-3 text-left shadow-sm transition hover:border-orange-300">
+                <span className="flex items-center gap-3">
+                  <span className="text-xl" aria-hidden="true">{icon}</span>
+                <span><span className="block text-sm font-semibold text-stone-800">{marker.name}</span><span className="text-xs capitalize text-stone-500">{marker.type} · {marker.crowd} area · {marker.accuracy === 'illustrative' ? 'illustrative pin' : marker.accuracy === 'approximate' ? 'approximate location' : 'mapped feature'}</span></span>
+                </span>
+                <span className="text-xs font-semibold text-orange-600">Route →</span>
+              </button>
+            );
+          })}
+        </div>
+      </section>
       <div className="h-4" />
     </div>
   );
