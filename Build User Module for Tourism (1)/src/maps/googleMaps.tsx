@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { Layers, LocateFixed, Maximize2, Minimize2, Minus, Plus } from 'lucide-react';
 
 export interface MapPosition { lat: number; lng: number }
 export type MapTravelMode = 'DRIVING' | 'TWO_WHEELER' | 'WALKING';
@@ -694,9 +695,9 @@ export function GoogleNavigationMap({
         ))}
       </div>}
       <div className="absolute right-4 top-3 z-20">
-        <button type="button" aria-expanded={layersOpen} aria-haspopup="menu" onClick={() => setLayersOpen((open) => !open)}
-          className="flex h-10 items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 shadow-md hover:bg-slate-50">
-          <span aria-hidden="true">▧</span><span>Layers</span><span className="text-[10px]">{layersOpen ? '▲' : '▼'}</span>
+        <button type="button" aria-expanded={layersOpen} aria-haspopup="menu" onClick={() => setLayersOpen((open) => !open)} aria-label="Map layers" title="Map layers"
+          className="flex h-11 w-11 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-md transition hover:bg-slate-50 hover:text-blue-700 active:scale-95">
+          <Layers aria-hidden="true" className="h-5 w-5" />
         </button>
         {layersOpen && <div role="menu" aria-label="Map type" className="absolute right-0 mt-2 w-44 overflow-hidden rounded-xl border border-slate-200 bg-white p-1 shadow-xl">
           {([
@@ -718,14 +719,16 @@ export function GoogleNavigationMap({
         {pointSelectionArmed ? 'Tap map to select · Cancel' : !position && stops.length ? 'Choose starting point' : !position ? 'Set route point' : stops.length ? 'Add waypoint' : 'Choose destination'}
       </button>}
       <button type="button" onClick={toggleFullscreen} aria-label={isFullscreen ? 'Exit full screen map' : 'View full screen map'} title={isFullscreen ? 'Exit full screen' : 'Full screen'}
-        className="absolute right-4 top-[3.5rem] z-20 flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-white text-lg font-semibold text-slate-700 shadow-md hover:bg-slate-50">{isFullscreen ? '⤢' : '⛶'}</button>
+        className="absolute right-4 top-[3.75rem] z-10 flex h-11 w-11 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-md transition hover:bg-slate-50 hover:text-blue-700 active:scale-95">
+        {isFullscreen ? <Minimize2 aria-hidden="true" className="h-5 w-5" /> : <Maximize2 aria-hidden="true" className="h-5 w-5" />}
+      </button>
       {(onLocateMe || position) && <button type="button" onClick={() => { if (position) centerOnUser(); onLocateMe?.(); }} disabled={locating} aria-label="Find my live location" title={locating ? 'Finding your location…' : 'Find my live location'}
-        className="absolute right-4 top-[6.5rem] z-10 flex h-11 w-11 items-center justify-center rounded-xl border border-slate-200 bg-white text-xl font-semibold text-blue-700 shadow-md hover:bg-blue-50 disabled:cursor-wait disabled:opacity-60">{locating ? '◌' : '◎'}</button>}
-      <div className="absolute bottom-8 right-4 z-10 flex flex-col overflow-hidden rounded-xl border border-slate-300 bg-white shadow-lg" role="group" aria-label="Map zoom controls">
+        className="absolute right-4 top-[7rem] z-10 flex h-11 w-11 items-center justify-center rounded-full border border-slate-200 bg-white text-blue-700 shadow-md transition hover:bg-blue-50 active:scale-95 disabled:cursor-wait disabled:opacity-60">{locating ? <span className="animate-pulse" aria-hidden="true">◌</span> : <LocateFixed aria-hidden="true" className="h-5 w-5" />}</button>}
+      <div className="absolute bottom-8 right-4 z-10 flex flex-col gap-2" role="group" aria-label="Map zoom controls">
         <button type="button" aria-label="Zoom in" title="Zoom in" onClick={() => { const map = mapRef.current; const zoom = map?.getZoom(); if (map && zoom !== undefined) map.setZoom(Math.min(21, zoom + 1)); }}
-          className="flex h-11 w-11 items-center justify-center border-b border-slate-200 text-2xl font-normal leading-none text-slate-700 hover:bg-slate-50 active:bg-slate-100">+</button>
+          className="flex h-11 w-11 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-md transition hover:bg-slate-50 hover:text-blue-700 active:scale-95"><Plus aria-hidden="true" className="h-5 w-5" /></button>
         <button type="button" aria-label="Zoom out" title="Zoom out" onClick={() => { const map = mapRef.current; const zoom = map?.getZoom(); if (map && zoom !== undefined) map.setZoom(Math.max(2, zoom - 1)); }}
-          className="flex h-11 w-11 items-center justify-center text-2xl font-normal leading-none text-slate-700 hover:bg-slate-50 active:bg-slate-100">−</button>
+          className="flex h-11 w-11 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-md transition hover:bg-slate-50 hover:text-blue-700 active:scale-95"><Minus aria-hidden="true" className="h-5 w-5" /></button>
       </div>
       {loadError && <div role="alert" className="absolute inset-x-3 top-3 z-20 rounded-lg bg-red-50 p-3 text-sm text-red-800 shadow">{loadError}</div>}
     </div>
