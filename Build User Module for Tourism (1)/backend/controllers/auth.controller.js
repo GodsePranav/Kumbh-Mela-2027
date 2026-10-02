@@ -67,32 +67,28 @@ const logout = (req, res) => {
   return sendSuccess(res, null, 'Logged out successfully');
 };
 
-// ── POST /api/v1/auth/quick-login ──────────────────────────────────────────────
-const LoginUser = require('../models/LoginUser.model');
-
-const quickLogin = async (req, res) => {
+// ── Development-only demo login ───────────────────────────────────────────────
+const crypto = require('crypto');
+const VolunteerProfile = require('../models/VolunteerProfile.model');
+const demoLogin = async (req, res) => {
+  if (process.env.NODE_ENV === 'production') return sendError(res, 'Demo login is disabled in production.', 404);
   try {
-    const { name, emailOrMobile, password } = req.body;
-    if (!name || !emailOrMobile || !password) {
-      return sendError(res, 'Name, Email/Mobile, and Password are required.', 400);
+    const role = ['user', 'volunteer', 'admin'].includes(req.body?.role) ? req.body.role : null;
+    if (!role) return sendError(res, 'Choose a valid demo role.', 400);
+    const email = role === 'volunteer' ? 'volunteer@kumbhsmart.in' : role === 'admin' ? 'admin@kumbhsmart.in' : 'pilgrim@kumbhsmart.in';
+    const name = role === 'volunteer' ? 'Demo Volunteer' : role === 'admin' ? 'Control Room Admin' : 'Demo Pilgrim';
+    let user = await User.findOne({ email });
+    if (user && user.role !== role) return sendError(res, 'Demo account role mismatch.', 409);
+    if (!user) user = await User.create({ name, email, password: crypto.randomBytes(24).toString('hex'), role, isVerified: true });
+    if (role === 'volunteer') {
+      await VolunteerProfile.updateOne({ user: user._id }, { $setOnInsert: { badgeNumber: `DEMO-${String(user._id).slice(-8)}`, dutyStatus: 'ON_DUTY', emergencyEligibility: true } }, { upsert: true });
     }
-    
-    // Create or update the login user in the separate schema
-    let loginUser = await LoginUser.findOne({ emailOrMobile });
-    if (loginUser) {
-      loginUser.name = name;
-      loginUser.password = password; // In a real app we'd hash this
-      loginUser.lastLogin = Date.now();
-      await loginUser.save();
-    } else {
-      loginUser = await LoginUser.create({ name, emailOrMobile, password });
-    }
-
-    return sendSuccess(res, { user: { name: loginUser.name, email: loginUser.emailOrMobile } }, 'Logged in successfully!');
+    const token = generateToken(user._id);
+    return sendSuccess(res, { user, token }, 'Demo session started.');
   } catch (err) {
-    console.error('quickLogin error:', err);
-    return sendError(res, 'Login failed. Please try again.', 500);
+    console.error('demoLogin error:', err.message);
+    return sendError(res, 'Demo login is unavailable. Ensure the database is running.', 503);
   }
 };
 
-module.exports = { register, login, getMe, logout, quickLogin };
+module.exports = { register, login, getMe, logout, demoLogin };

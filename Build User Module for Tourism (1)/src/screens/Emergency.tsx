@@ -1,506 +1,198 @@
-import React, { useState, useEffect } from 'react';
-import { HOSPITALS, POLICE_STATIONS } from '../data/mockData';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { HOSPITALS } from '../data/mockData';
 import { sosApi } from '../services/api';
 import { realtimeService } from '../services/realtimeService';
+import { locationService, LocationData } from '../services/locationService';
+import { GoogleNavigationMap, MapPosition } from '../maps/googleMaps';
 
-interface EmergencyProps {
-  onBack: () => void;
-  onNavigate: (screen: string) => void;
-}
-
-type SOSState = 'idle' | 'confirming' | 'sending' | 'active';
+interface EmergencyProps { onBack: () => void; onNavigate: (screen: string) => void }
+const ACTIVE = new Set(['CREATED', 'BROADCASTING', 'ACKNOWLEDGED', 'ACCEPTED', 'RESPONDER_ASSIGNED', 'EN_ROUTE', 'NEARBY', 'ARRIVED', 'ASSISTING', 'ESCALATED']);
+const point = (value: any): MapPosition | null => {
+  const coordinates = value?.coordinates;
+  if (!Array.isArray(coordinates) || coordinates.length < 2) return null;
+  const [lng, lat] = coordinates.map(Number);
+  return Number.isFinite(lat) && Number.isFinite(lng) ? { lat, lng } : null;
+};
 
 export default function Emergency({ onBack, onNavigate }: EmergencyProps) {
-  const [sosState, setSOSState] = useState<SOSState>('idle');
-  const [countdown, setCountdown] = useState(5);
-  const [emergencyType, setEmergencyType] = useState('sos');
-  const [location] = useState('Ram Ghat Sector B, Nashik (19.9975°N, 73.7898°E)');
+  const [confirming, setConfirming] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [emergencyType, setEmergencyType] = useState('medical');
   const [sosData, setSosData] = useState<any | null>(null);
-  const [responderInfo, setResponderInfo] = useState<any | null>(null);
+  const [gpsLocation, setGpsLocation] = useState<LocationData | null>(null);
+  const [responderLocation, setResponderLocation] = useState<MapPosition | null>(null);
+  const activeId = useRef<string | null>(null);
+  const lastUserLocationSentAt = useRef(0);
+
+  const refreshSos = useCallback(async (sosId: string) => {
+    try {
+      const result = await sosApi.getSosById(sosId);
+      if (result.success && result.data) {
+        setSosData(result.data);
+        setResponderLocation(point(result.data.responderLocation));
+        if (!ACTIVE.has(result.data.status)) localStorage.removeItem('kumbh_active_sos');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not refresh SOS status.');
+    }
+  }, []);
 
   useEffect(() => {
     realtimeService.init();
-
-    realtimeService.subscribe('sos-accepted', (data) => {
-      console.log('⚡ SOS Accepted by responder:', data);
-      setResponderInfo({
-        name: data.responderName || 'Rahul Sharma',
-        phone: data.responderPhone || '9988776655',
-        badge: 'VOL-108',
-        etaSeconds: data.etaSeconds || 240,
-        distanceMeters: data.distanceMeters || 320,
-      });
-      setSosData((prev: any) => ({ ...prev, status: 'EN_ROUTE' }));
-    });
-
-    realtimeService.subscribe('sos-responder-location', (data) => {
-      setResponderInfo((prev: any) => ({
-        ...prev,
-        etaSeconds: data.etaSeconds,
-        distanceMeters: data.distanceMeters,
-      }));
-      setSosData((prev: any) => ({ ...prev, status: data.status }));
-    });
-
-    realtimeService.subscribe('sos-status-updated', (data) => {
-      setSosData((prev: any) => ({ ...prev, status: data.status }));
-    });
-
-    return () => {
-      realtimeService.unsubscribe('sos-accepted');
-      realtimeService.unsubscribe('sos-responder-location');
-      realtimeService.unsubscribe('sos-status-updated');
+    const saved = localStorage.getItem('kumbh_active_sos');
+    let savedId: string | null = saved;
+    if (saved?.startsWith('{')) { try { savedId = JSON.parse(saved).sosId || null; } catch { savedId = null; } }
+    if (savedId) { activeId.current = savedId; void refreshSos(savedId); }
+    const update = (data: any) => {
+      if (!data?.sosId || data.sosId !== activeId.current) return;
+      if (data.responderLocation) setResponderLocation(point(data.responderLocation));
+      void refreshSos(data.sosId);
     };
-  }, []);
+    const updateStatus = (data: any) => {
+      if (!data?.sosId || data.sosId !== activeId.current) return;
+      setSosData((previous: any) => previous ? { ...previous, status: data.status } : previous);
+      void refreshSos(data.sosId);
+    };
+    realtimeService.subscribe('sos-accepted', update);
+    realtimeService.subscribe('sos-responder-location', update);
+    realtimeService.subscribe('sos-status-updated', updateStatus);
+    const timer = window.setInterval(() => { if (activeId.current) void refreshSos(activeId.current); }, 5000);
+    return () => {
+      window.clearInterval(timer);
+      realtimeService.unsubscribe('sos-accepted', update);
+      realtimeService.unsubscribe('sos-responder-location', update);
+      realtimeService.unsubscribe('sos-status-updated', updateStatus);
+    };
+  }, [refreshSos]);
 
-  const [sosHistory, setSosHistory] = useState<any[]>(() => {
-    try {
-      const saved = localStorage.getItem('kumbh_sos_history');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
-
-  const saveSosToHistory = (sos: any) => {
-    setSosHistory((prev) => {
-      const updated = [sos, ...prev.filter((s) => s.sosId !== sos.sosId)];
-      localStorage.setItem('kumbh_sos_history', JSON.stringify(updated));
-      localStorage.setItem('kumbh_active_sos', JSON.stringify(sos));
-      window.dispatchEvent(new CustomEvent('kumbh_sos_event', { detail: sos }));
-      return updated;
+  useEffect(() => {
+    if (!sosData || !ACTIVE.has(sosData.status)) return;
+    return locationService.watchLocation((loc) => {
+      setGpsLocation(loc);
+      if (loc.accuracy > 100) { setError(`GPS accuracy is low (±${Math.round(loc.accuracy)} m).`); return; }
+      setError('');
+      const sosId = sosData.sosId;
+      if (Date.now() - lastUserLocationSentAt.current < 15000) return;
+      lastUserLocationSentAt.current = Date.now();
+      void sosApi.updateUserLocation(sosId, loc.lat, loc.lng, loc.accuracy, loc.timestamp).then((result) => {
+        setSosData((current: any) => current?.sosId === sosId ? { ...current, location: result.data.location, locationAccuracy: result.data.locationAccuracy, locationCapturedAt: result.data.locationCapturedAt, etaSeconds: result.data.etaSeconds ?? current.etaSeconds, distanceMeters: result.data.distanceMeters ?? current.distanceMeters } : current);
+      }).catch(() => setError('Live location could not be sent. Check your internet connection.'));
+    }, (locationError) => {
+      setError(locationError.message);
+      setGpsLocation((current) => current ? { ...current, isStale: true } : current);
     });
-  };
-
-  const triggerSosCreation = async () => {
-    setSOSState('sending');
-    let sosObj: any = null;
+  }, [sosData?.sosId, sosData?.status]);
+  const sendSos = async () => {
+    if (loading) return;
+    setLoading(true);
+    setError('');
     try {
-      const res = await sosApi.createSos({
-        category: emergencyType || 'sos',
-        locationText: 'Ram Ghat Sector B, Nashik',
-        message: 'P0 Emergency SOS Triggered by Pilgrim',
+      const location = await locationService.getCurrentLocation(100);
+      const result = await sosApi.createSos({
+        category: emergencyType,
+        location: { type: 'Point', coordinates: [location.lng, location.lat] },
+        accuracy: location.accuracy,
+        timestamp: location.timestamp,
+        message: 'Emergency assistance requested by the pilgrim.',
       });
-      if (res.success && res.data) {
-        sosObj = res.data;
-      }
+      if (!result.success || !result.data?.sosId) throw new Error('The SOS request was not confirmed by the server.');
+      activeId.current = result.data.sosId;
+      setGpsLocation(location);
+      setSosData(result.data);
+      localStorage.setItem('kumbh_active_sos', result.data.sosId);
+      let history: any[] = [];
+      try { history = JSON.parse(localStorage.getItem('kumbh_sos_history') || '[]'); } catch { history = []; }
+      const historyItem = { sosId: result.data.sosId, category: result.data.category, status: result.data.status, createdAt: result.data.createdAt };
+      localStorage.setItem('kumbh_sos_history', JSON.stringify([historyItem, ...history].slice(0, 20)));
+      window.dispatchEvent(new CustomEvent('kumbh_sos_event', { detail: result.data }));
+      setConfirming(false);
     } catch (err) {
-      console.warn('Backend SOS create fallback:', err);
-    }
-
-    if (!sosObj) {
-      const serialNum = `SOS-2027-${String(Math.floor(100000 + Math.random() * 900000))}`;
-      sosObj = {
-        sosId: serialNum,
-        userName: 'Pilgrim in Distress',
-        userPhone: '9876543210',
-        category: emergencyType || 'sos',
-        priority: 'P0',
-        locationText: 'Ram Ghat Sector B, Nashik',
-        status: 'BROADCASTING',
-        createdAt: new Date().toISOString(),
-      };
-    }
-
-    setSosData(sosObj);
-    saveSosToHistory(sosObj);
-    realtimeService.emit('trigger-sos', sosObj);
-    setSOSState('active');
+      setError(err instanceof Error ? err.message : 'SOS could not be sent. Check GPS and network, then retry.');
+    } finally { setLoading(false); }
   };
 
-  const handleSOS = () => {
-    if (sosState === 'idle') {
-      setSOSState('confirming');
-      setCountdown(3);
-      const interval = setInterval(() => {
-        setCountdown((c) => {
-          if (c <= 1) {
-            clearInterval(interval);
-            triggerSosCreation();
-            return 0;
-          }
-          return c - 1;
-        });
-      }, 1000);
-    }
+  const cancelSos = async () => {
+    if (!sosData?.sosId) { setConfirming(false); return; }
+    setLoading(true);
+    setError('');
+    try {
+      await sosApi.cancelSos(sosData.sosId);
+      setSosData((current: any) => ({ ...current, status: 'CANCELLED' }));
+      localStorage.removeItem('kumbh_active_sos');
+      activeId.current = null;
+    } catch (err) { setError(err instanceof Error ? err.message : 'Could not cancel SOS.'); }
+    finally { setLoading(false); }
   };
 
-  const cancelSOS = () => {
-    setSOSState('idle');
-    setCountdown(3);
-  };
-
-  if (sosState === 'sending') {
-    return (
-      <div className="flex flex-col min-h-screen items-center justify-center p-6 text-center pb-24" style={{ background: '#FEFAF4' }}>
-        <div className="w-20 h-20 rounded-full border-4 border-red-600 border-t-transparent animate-spin mb-4" />
-        <h2 className="text-xl font-bold text-red-700" style={{ fontFamily: 'Poppins' }}>Broadcasting Emergency SOS...</h2>
-        <p className="text-stone-600 text-xs mt-2 max-w-xs">
-          Connecting to Kumbh Mela Control Room and alerting nearby registered volunteers in Ram Ghat Sector B.
-        </p>
-      </div>
-    );
-  }
-
-  if (sosState === 'active') {
-    const status = sosData?.status || 'BROADCASTING';
-    const isAccepted = !!responderInfo || status === 'ACCEPTED' || status === 'EN_ROUTE' || status === 'NEARBY' || status === 'ARRIVED' || status === 'ASSISTING' || status === 'RESOLVED';
-    const isArrived = status === 'ARRIVED' || status === 'ASSISTING' || status === 'RESOLVED';
-    const isResolved = status === 'RESOLVED';
-
-    return (
-      <div className="flex flex-col min-h-screen pb-24" style={{ background: '#FEFAF4' }}>
-        <div className="gradient-emergency px-5 pt-14 pb-8">
-          <div className="flex items-center gap-3 mb-4">
-            <button onClick={cancelSOS} className="w-8 h-8 rounded-full bg-white/20 flex items-center justify-center">
-              <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18" />
-              </svg>
-            </button>
-            <h1 className="text-white font-bold text-lg" style={{ fontFamily: 'Poppins' }}>SOS ACTIVE</h1>
-            <div className="ml-auto flex items-center gap-2">
-              <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
-              <span className="text-white text-xs font-medium">LIVE</span>
-            </div>
-          </div>
-          <div className="bg-white/15 rounded-2xl p-4">
-            <p className="text-red-100 text-xs font-medium">Emergency Report ID</p>
-            <p className="text-white text-lg font-bold font-mono" style={{ fontFamily: 'Poppins' }}>{sosData?.sosId || reportId}</p>
-          </div>
-        </div>
-
-        <div className="flex-1 px-5 py-5 overflow-y-auto space-y-4">
-          {/* Assigned Responder Live Card */}
-          {isAccepted ? (
-            <div className="bg-white rounded-2xl p-5 border-2 border-emerald-500 shadow-md space-y-3">
-              <div className="flex items-center justify-between">
-                <span className="bg-emerald-100 text-emerald-800 text-[10px] font-black px-2.5 py-0.5 rounded-full uppercase">
-                  VOLUNTEER RESPONDER ASSIGNED
-                </span>
-                <span className="text-xs text-emerald-600 font-bold">STATUS: {status}</span>
-              </div>
-              <div className="flex items-center space-x-3 pt-1">
-                <div className="w-12 h-12 rounded-full bg-orange-100 flex items-center justify-center text-2xl border border-orange-200">
-                  🛡️
-                </div>
-                <div>
-                  <h3 className="font-bold text-stone-900 text-base">{responderInfo?.name || 'Rahul Sharma'}</h3>
-                  <p className="text-xs text-stone-500">Badge: <strong className="text-stone-800 font-mono">VOL-108</strong> • 📞 <a href={`tel:${responderInfo?.phone || '9988776655'}`} className="text-orange-600 underline font-bold">{responderInfo?.phone || '9988776655'}</a></p>
-                </div>
-              </div>
-
-              {/* Realtime ETA Display */}
-              <div className="bg-stone-50 p-3 rounded-xl border border-stone-200 flex justify-between items-center text-xs">
-                <div>
-                  <span className="text-[10px] text-stone-400 font-bold uppercase block">ESTIMATED ETA</span>
-                  <span className="text-xl font-black text-emerald-600">
-                    {responderInfo?.etaSeconds ? `${Math.ceil(responderInfo.etaSeconds / 60)} MIN` : '4 MIN'}
-                  </span>
-                </div>
-                <div className="text-right">
-                  <span className="text-[10px] text-stone-400 font-bold uppercase block">DISTANCE AWAY</span>
-                  <span className="text-lg font-bold text-stone-800">
-                    {responderInfo?.distanceMeters ? `${responderInfo.distanceMeters}m` : '320m'}
-                  </span>
-                </div>
-              </div>
-            </div>
-          ) : (
-            <div className="bg-white rounded-2xl p-4 border border-stone-200 shadow-sm flex items-center space-x-3">
-              <div className="w-8 h-8 rounded-full border-2 border-orange-500 border-t-transparent animate-spin flex-shrink-0" />
-              <div>
-                <p className="text-stone-800 text-xs font-bold">Searching Nearby Eligible Volunteers...</p>
-                <p className="text-stone-500 text-[11px]">Round 1 broadcast sent to volunteers in Ram Ghat Sector B</p>
-              </div>
-            </div>
-          )}
-
-          {/* SOS Workflow Step Machine */}
-          <div className="space-y-2">
-            {[
-              { done: true, label: 'Location Captured', value: location },
-              { done: true, label: 'P0 Emergency Created', value: `Report ID: ${sosData?.sosId || reportId}` },
-              { done: isAccepted, label: 'Volunteer Assigned', value: isAccepted ? `Assigned to ${responderInfo?.name || 'Rahul Sharma'}` : 'Notifying wave 1 volunteers...' },
-              { done: isAccepted, label: 'Help On The Way', value: isAccepted ? `ETA: ${Math.ceil((responderInfo?.etaSeconds || 240) / 60)} min` : 'Pending responder acceptance' },
-              { done: isArrived, label: 'Volunteer Arrived at Scene', value: isArrived ? 'Responder is with you on site' : 'En route to location' },
-              { done: isResolved, label: 'Emergency Resolved', value: isResolved ? 'Marked complete' : 'In progress' },
-            ].map((step, i) => (
-              <div key={i} className="flex items-start gap-3 bg-white rounded-xl p-3 border border-stone-100 shadow-sm">
-                <div className={`w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5 ${
-                  step.done ? 'bg-emerald-500' : 'bg-orange-100'
-                }`}>
-                  {step.done
-                    ? <svg className="w-3.5 h-3.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg>
-                    : <div className="w-3 h-3 rounded-full border-2 border-orange-400 border-t-transparent animate-spin" />
-                  }
-                </div>
-                <div>
-                  <p className="text-stone-800 text-sm font-bold">{step.label}</p>
-                  <p className="text-stone-500 text-xs">{step.value}</p>
-                </div>
-              </div>
-            ))}
-          </div>
-
-          {/* Nearby Help */}
-          <div className="bg-white rounded-2xl p-4 border border-stone-100">
-            <p className="font-semibold text-stone-800 text-sm mb-3" style={{ fontFamily: 'Poppins' }}>Nearest Help</p>
-            <div className="space-y-2">
-              {HOSPITALS.slice(0, 2).map(h => (
-                <div key={h.id} className="flex items-center gap-3">
-                  <div className="w-9 h-9 rounded-xl bg-red-50 flex items-center justify-center">
-                    <span>🏥</span>
-                  </div>
-                  <div className="flex-1">
-                    <p className="text-sm font-medium text-stone-800">{h.name}</p>
-                    <p className="text-xs text-stone-500">{h.distance} · Emergency Open 24/7</p>
-                  </div>
-                  <a href={`tel:${h.contact}`}
-                    className="bg-green-500 text-white text-xs font-semibold px-3 py-1.5 rounded-lg">
-                    Call
-                  </a>
-                </div>
-              ))}
-              {POLICE_STATIONS.slice(0, 1).map(p => (
-                <div key={p.id} className="flex items-center gap-3">
-                  <div className="w-9 h-9 rounded-xl bg-blue-50 flex items-center justify-center">
-                    <span>👮</span>
-                  </div>
-                  <div className="flex-1">
-                    <p className="text-sm font-medium text-stone-800">{p.name}</p>
-                    <p className="text-xs text-stone-500">{p.distance}</p>
-                  </div>
-                  <a href="tel:100" className="bg-blue-500 text-white text-xs font-semibold px-3 py-1.5 rounded-lg">Call 100</a>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Emergency Resolved Banner for Pilgrim */}
-          {isResolved ? (
-            <div className="bg-emerald-50 border-2 border-emerald-500 rounded-2xl p-4 space-y-3 shadow-lg">
-              <div className="flex items-center space-x-2">
-                <span className="text-2xl">✅</span>
-                <div>
-                  <h3 className="font-bold text-emerald-900 text-sm" style={{ fontFamily: 'Poppins' }}>Emergency Request Resolved</h3>
-                  <p className="text-xs text-emerald-700">Volunteer responder has completed assistance for this request.</p>
-                </div>
-              </div>
-              <button 
-                onClick={() => {
-                  if (sosData?.sosId) {
-                    sosApi.updateStatus(sosData.sosId, 'RESOLVED').catch(() => {});
-                  }
-                  localStorage.removeItem('kumbh_active_sos');
-                  cancelSOS();
-                }}
-                className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs py-3 rounded-xl shadow">
-                Mark as Complete & Close Emergency
-              </button>
-            </div>
-          ) : (
-            <button 
-              onClick={() => {
-                if (sosData?.sosId) {
-                  sosApi.updateStatus(sosData.sosId, 'RESOLVED').catch(() => {});
-                }
-                localStorage.removeItem('kumbh_active_sos');
-                setSosData((prev: any) => ({ ...prev, status: 'RESOLVED' }));
-                alert('✅ Emergency marked as RESOLVED! Stay safe.');
-              }}
-              className="w-full py-3.5 rounded-2xl bg-emerald-600 text-white font-bold text-xs shadow hover:bg-emerald-500 transition">
-              ✅ Mark Emergency as Resolved
-            </button>
-          )}
-
-          <button onClick={() => onNavigate('map')}
-            className="w-full py-3.5 rounded-2xl gradient-indigo text-white font-semibold text-sm flex items-center justify-center gap-2 shadow"
-            style={{ fontFamily: 'Poppins' }}>
-            🗺️ Navigate to Nearest Hospital
-          </button>
-          <button onClick={cancelSOS}
-            className="w-full py-3 rounded-2xl border border-stone-300 text-stone-600 font-medium text-sm">
-            Close Emergency Request
-          </button>
-        </div>
-      </div>
-    );
-  }
+  const target = point(sosData?.location);
+  const position = gpsLocation ? { lat: gpsLocation.lat, lng: gpsLocation.lng } : target;
+  const active = sosData && ACTIVE.has(sosData.status);
+  const statusLabel = sosData?.status === 'BROADCASTING' ? 'Searching for nearby volunteers' : String(sosData?.status || '').replace(/_/g, ' ');
+  const responderLocationIsStale = !!sosData?.responderLocationUpdatedAt && Date.now() - new Date(sosData.responderLocationUpdatedAt).getTime() > 60000;
+  const modeNames: Record<string, string> = { medical: 'Medical', fire: 'Fire', missing_person: 'Missing person', crowd_crush: 'Crowd emergency', accident: 'Accident', crime: 'Safety', other: 'Other' };
 
   return (
-    <div className="flex flex-col min-h-screen pb-24" style={{ background: '#FEFAF4' }}>
-      {/* Header */}
-      <div className="gradient-emergency px-5 pt-14 pb-6">
+    <div className="min-h-screen pb-24" style={{ background: '#FEFAF4' }}>
+      <div className="gradient-emergency px-5 pt-14 pb-6 text-white">
         <div className="flex items-center gap-3">
-          <button onClick={onBack} className="w-8 h-8 rounded-full bg-white/20 flex items-center justify-center">
-            <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18" />
-            </svg>
-          </button>
-          <h1 className="text-white font-bold text-lg" style={{ fontFamily: 'Poppins' }}>Emergency Services</h1>
+          <button onClick={onBack} aria-label="Back" className="w-9 h-9 rounded-full bg-white/20">‹</button>
+          <h1 className="font-bold text-lg" style={{ fontFamily: 'Poppins' }}>Emergency Services</h1>
         </div>
       </div>
 
-      <div className="px-5 py-6 space-y-5">
-        {/* SOS Button */}
-        {sosState === 'idle' && (
-          <div className="flex flex-col items-center py-6">
-            <p className="text-stone-600 text-sm text-center mb-6 max-w-xs">
-              Press and hold the SOS button for emergency assistance. Your location will be shared with rescue teams.
-            </p>
-            <div className="relative flex items-center justify-center">
-              <div className="absolute w-40 h-40 rounded-full bg-red-100" />
-              <div className="absolute w-32 h-32 rounded-full bg-red-200" />
-              <button onClick={handleSOS}
-                className="relative w-28 h-28 rounded-full gradient-emergency text-white font-black text-2xl shadow-2xl sos-pulse transition-transform active:scale-95"
-                style={{ fontFamily: 'Poppins' }}>
-                SOS
-              </button>
-            </div>
-            <p className="text-stone-400 text-xs text-center mt-6">Tap once to activate • Help arrives in 8–12 min</p>
-          </div>
-        )}
-
-        {sosState === 'confirming' && (
-          <div className="flex flex-col items-center py-6">
-            <div className="w-32 h-32 rounded-full gradient-emergency flex items-center justify-center shadow-2xl">
-              <span className="text-white text-5xl font-black" style={{ fontFamily: 'Poppins' }}>{countdown}</span>
-            </div>
-            <p className="text-stone-800 font-bold text-lg mt-5" style={{ fontFamily: 'Poppins' }}>Sending SOS in {countdown}s</p>
-            <p className="text-stone-500 text-sm mt-1">Cancel if this was accidental</p>
-            <button onClick={cancelSOS}
-              className="mt-5 px-8 py-3 rounded-2xl border-2 border-red-500 text-red-600 font-semibold">
-              Cancel
-            </button>
-          </div>
-        )}
-
-        {sosState === 'sending' && (
-          <div className="flex flex-col items-center py-8">
-            <div className="w-16 h-16 rounded-full bg-red-100 flex items-center justify-center">
-              <div className="w-8 h-8 rounded-full border-4 border-red-500 border-t-transparent animate-spin" />
-            </div>
-            <p className="text-stone-800 font-bold text-lg mt-4">Sending Emergency Alert...</p>
-          </div>
-        )}
-
-        {/* Emergency Types */}
-        <div>
-          <p className="font-semibold text-stone-800 text-sm mb-3" style={{ fontFamily: 'Poppins' }}>Emergency Type</p>
-          <div className="grid grid-cols-3 gap-2">
-            {[
-              { icon: '🏥', label: 'Medical' },
-              { icon: '🔥', label: 'Fire' },
-              { icon: '👶', label: 'Child Lost' },
-              { icon: '🦽', label: 'Mobility Help' },
-              { icon: '👊', label: 'Security' },
-              { icon: '🌊', label: 'Drowning' },
-            ].map(type => (
-              <button key={type.label}
-                onClick={() => setEmergencyType(type.label)}
-                className={`flex flex-col items-center gap-1.5 p-3 rounded-xl border-2 transition-all ${
-                  emergencyType === type.label ? 'border-red-500 bg-red-50' : 'border-stone-200 bg-white'
-                }`}>
-                <span className="text-2xl">{type.icon}</span>
-                <span className="text-xs text-stone-600 font-medium">{type.label}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Quick Dial */}
-        <div className="bg-white rounded-2xl p-4 border border-stone-100 shadow-sm">
-          <p className="font-semibold text-stone-800 text-sm mb-3" style={{ fontFamily: 'Poppins' }}>Quick Dial</p>
-          <div className="grid grid-cols-2 gap-2">
-            {[
-              { icon: '🚨', label: 'Police', number: '100', color: 'bg-blue-500' },
-              { icon: '🚒', label: 'Fire Brigade', number: '101', color: 'bg-red-500' },
-              { icon: '🚑', label: 'Ambulance', number: '108', color: 'bg-green-500' },
-              { icon: '🆘', label: 'Kumbh Control', number: '1800-XXX', color: 'bg-orange-500' },
-            ].map(item => (
-              <a key={item.label} href={`tel:${item.number}`}
-                className={`${item.color} rounded-xl p-3 flex items-center gap-2.5`}>
-                <span className="text-xl">{item.icon}</span>
-                <div>
-                  <p className="text-white text-xs font-bold">{item.label}</p>
-                  <p className="text-white/80 text-xs">{item.number}</p>
-                </div>
-              </a>
-            ))}
-          </div>
-        </div>
-
-        {/* Nearby Hospitals */}
-        <div className="bg-white rounded-2xl p-4 border border-stone-100 shadow-sm">
-          <p className="font-semibold text-stone-800 text-sm mb-3" style={{ fontFamily: 'Poppins' }}>Nearest Hospitals</p>
-          <div className="space-y-3">
-            {HOSPITALS.map(h => (
-              <div key={h.id} className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-red-50 flex items-center justify-center">
-                  <span className="text-lg">🏥</span>
-                </div>
-                <div className="flex-1">
-                  <p className="text-sm font-semibold text-stone-800">{h.name}</p>
-                  <p className="text-xs text-stone-500">{h.distance} · {h.type}</p>
-                </div>
-                <div className="flex flex-col gap-1">
-                  <a href={`tel:${h.contact}`}
-                    className="bg-green-500 text-white text-[10px] font-bold px-2.5 py-1 rounded-lg">Call</a>
-                  <button onClick={() => onNavigate('map')}
-                    className="bg-blue-50 text-blue-600 text-[10px] font-bold px-2.5 py-1 rounded-lg">Route</button>
-                </div>
+      <div className="px-5 py-5 space-y-5">
+        {active ? (
+          <section className="space-y-4">
+            <div className="bg-red-50 border border-red-200 rounded-2xl p-4">
+              <div className="flex justify-between items-start gap-3">
+                <div><p className="text-red-700 font-black text-lg">SOS ACTIVE</p><p className="text-red-800 text-sm mt-1">{statusLabel}</p></div>
+                <span className="text-xs font-mono text-red-800">{sosData.sosId}</span>
               </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Emergency Request History */}
-        <div className="bg-white rounded-2xl p-4 border border-stone-200 shadow-sm space-y-3">
-          <div className="flex justify-between items-center">
-            <p className="font-semibold text-stone-800 text-sm" style={{ fontFamily: 'Poppins' }}>📜 My Emergency Request History</p>
-            <span className="text-xs bg-orange-100 text-orange-700 font-bold px-2 py-0.5 rounded-full">{sosHistory.length} Saved</span>
-          </div>
-
-          {sosHistory.length === 0 ? (
-            <p className="text-xs text-stone-400 py-2">No previous emergency requests found.</p>
-          ) : (
-            <div className="space-y-2">
-              {sosHistory.map((s, idx) => (
-                <div key={idx} className="bg-stone-50 p-3 rounded-xl border border-stone-200 text-xs space-y-1">
-                  <div className="flex justify-between items-center">
-                    <span className="font-bold text-stone-800 font-mono">{s.sosId}</span>
-                    <span className={`font-bold px-2 py-0.5 rounded text-[10px] ${
-                      s.status === 'RESOLVED' ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'
-                    }`}>
-                      {s.status || 'BROADCASTING'}
-                    </span>
-                  </div>
-                  <p className="text-stone-600">Category: <strong className="uppercase">{s.category || 'SOS'}</strong></p>
-                  <p className="text-stone-500">📍 {s.locationText || 'Ram Ghat Sector B'}</p>
-                  {s.createdAt && (
-                    <p className="text-[10px] text-stone-400">Created: {new Date(s.createdAt).toLocaleString()}</p>
-                  )}
-                </div>
-              ))}
+              <p className="text-xs text-stone-600 mt-3">Emergency type: {modeNames[sosData.category] || sosData.category}</p>
+              {target && <p className="text-xs text-stone-600 mt-1">GPS: {target.lat.toFixed(6)}, {target.lng.toFixed(6)} · accuracy ±{Math.round(sosData.locationAccuracy || gpsLocation?.accuracy || 0)} m</p>}
             </div>
-          )}
-        </div>
 
-        {/* Lost & Found */}
-        <button onClick={() => onNavigate('lostfound')}
-          className="w-full bg-white rounded-2xl p-4 border border-stone-100 shadow-sm flex items-center gap-4 text-left category-card">
-          <div className="w-12 h-12 rounded-2xl bg-purple-50 flex items-center justify-center">
-            <span className="text-2xl">🔍</span>
-          </div>
-          <div className="flex-1">
-            <p className="font-semibold text-stone-800 text-sm" style={{ fontFamily: 'Poppins' }}>Lost & Found</p>
-            <p className="text-stone-500 text-xs mt-0.5">Report missing person or found item</p>
-          </div>
-          <svg className="w-5 h-5 text-stone-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
-          </svg>
-        </button>
+            {target && <div className="bg-white rounded-2xl border border-stone-200 overflow-hidden">
+              {responderLocation && <div className="px-4 py-3 flex justify-between gap-2 text-sm"><span className="font-semibold text-stone-800">Volunteer responding</span><span className="text-emerald-700 font-bold">{Number.isFinite(sosData.etaSeconds) ? `About ${Math.max(1, Math.ceil(sosData.etaSeconds / 60))} min` : 'ETA updating'}</span></div>}
+              <GoogleNavigationMap center={target} position={position} positionTitle="Your location" focus={responderLocation} markers={responderLocation ? [{ id: 'sos-responder', title: sosData.responderName || 'Assigned volunteer', ...responderLocation, glyph: 'V', color: '#0f766e' }] : []} stops={responderLocation ? [{ id: 'responder', label: 'Volunteer', ...responderLocation }] : []} className="h-72 w-full" zoom={15} />
+              <div className="px-4 py-2 text-[11px] text-stone-500">{responderLocation ? `${responderLocationIsStale ? 'Last known volunteer location' : 'Volunteer location updated'} ${sosData.responderLocationUpdatedAt ? new Date(sosData.responderLocationUpdatedAt).toLocaleTimeString() : 'just now'}${responderLocationIsStale ? ' · GPS may be offline' : ''}` : 'Volunteer location will appear here after a volunteer accepts.'}</div>
+            </div>}
+
+            <div className="bg-white border border-stone-200 rounded-2xl p-4 space-y-2 text-sm">
+              <p><span className="text-stone-500">Response status: </span><strong>{statusLabel}</strong></p>
+              {sosData.distanceMeters != null && <p><span className="text-stone-500">Route distance: </span><strong>{(sosData.distanceMeters / 1000).toFixed(1)} km</strong></p>}
+              {sosData.responderName && <p><span className="text-stone-500">Volunteer: </span><strong>{sosData.responderName}</strong></p>}
+              {!sosData.etaSeconds && responderLocation && <p className="text-xs text-amber-700">Road routing is temporarily unavailable; live location remains visible.</p>}
+            </div>
+            {error && <p role="alert" className="text-sm text-red-700">{error}</p>}
+            <button disabled={loading} onClick={cancelSos} className="w-full rounded-xl border border-red-300 bg-white py-3 text-red-700 font-semibold disabled:opacity-50">{loading ? 'Updating…' : 'Cancel SOS'}</button>
+          </section>
+        ) : (
+          <>
+            {sosData && <div className="bg-stone-100 rounded-xl p-3 text-sm flex justify-between items-center"><span>Last SOS: {sosData.sosId} · {sosData.status}</span><button className="text-orange-700 font-semibold" onClick={() => { activeId.current = null; setSosData(null); }}>Close</button></div>}
+            <div className="bg-white rounded-2xl p-5 border border-stone-200 text-center">
+              <p className="text-stone-700 text-sm">Send your current GPS position to nearby volunteers for emergency assistance.</p>
+              <button disabled={loading} onClick={() => { setError(''); setConfirming(true); }} className="mt-5 w-28 h-28 rounded-full gradient-emergency text-white font-black text-2xl shadow-xl disabled:opacity-50">SOS</button>
+              {error && <p role="alert" className="mt-3 text-sm text-red-700">{error}</p>}
+            </div>
+            <div className="bg-white rounded-2xl p-4 border border-stone-200">
+              <h2 className="font-semibold text-stone-800 text-sm mb-3">Emergency Type</h2>
+              <div className="grid grid-cols-3 gap-2">{Object.entries(modeNames).map(([key, label]) => <button key={key} onClick={() => setEmergencyType(key)} className={`p-2 rounded-xl border text-xs ${emergencyType === key ? 'border-red-500 bg-red-50 text-red-700 font-bold' : 'border-stone-200 text-stone-600'}`}>{label}</button>)}</div>
+            </div>
+            <div className="bg-white rounded-2xl p-4 border border-stone-200">
+              <h2 className="font-semibold text-stone-800 text-sm mb-3">Emergency Numbers</h2>
+              <div className="grid grid-cols-3 gap-2">{[{ name: 'Emergency', number: '112' }, { name: 'Fire', number: '101' }, { name: 'Ambulance', number: '108' }].map((item) => <a key={item.number} href={`tel:${item.number}`} className="rounded-xl bg-stone-50 p-3 text-center"><span className="block text-xs text-stone-600">{item.name}</span><strong className="text-stone-900">{item.number}</strong></a>)}</div>
+            </div>
+            <div className="bg-white rounded-2xl p-4 border border-stone-200">
+              <h2 className="font-semibold text-stone-800 text-sm mb-3">Nearby Hospitals</h2>
+              <div className="space-y-3">{HOSPITALS.map((hospital) => <div key={hospital.id} className="flex items-center gap-3"><div className="flex-1"><p className="text-sm font-semibold text-stone-800">{hospital.name}</p><p className="text-xs text-stone-500">{hospital.distance} · {hospital.type}</p></div><a href={`tel:${hospital.contact}`} className="rounded-lg bg-green-600 px-3 py-1.5 text-xs font-bold text-white">Call</a><button onClick={() => onNavigate('map')} className="rounded-lg bg-blue-50 px-3 py-1.5 text-xs font-bold text-blue-700">Map</button></div>)}</div>
+            </div>
+          </>
+        )}
       </div>
+
+      {confirming && <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-5" role="dialog" aria-modal="true" aria-labelledby="sos-confirm-title"><div className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-xl"><h2 id="sos-confirm-title" className="text-lg font-bold text-stone-900">Send an SOS?</h2><p className="mt-2 text-sm text-stone-600">We’ll request your current GPS location and share it with an assigned responder. Location access is required.</p>{error && <p role="alert" className="mt-3 text-sm text-red-700">{error}</p>}<div className="mt-5 flex gap-3"><button disabled={loading} onClick={() => setConfirming(false)} className="flex-1 rounded-xl border border-stone-300 py-3 font-semibold text-stone-700">Cancel</button><button disabled={loading} onClick={sendSos} className="flex-1 rounded-xl bg-red-600 py-3 font-bold text-white disabled:opacity-60">{loading ? 'Getting GPS…' : 'Confirm SOS'}</button></div></div></div>}
     </div>
   );
 }

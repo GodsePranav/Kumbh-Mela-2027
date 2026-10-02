@@ -6,6 +6,7 @@
 
 require('dotenv').config();
 const mongoose = require('mongoose');
+const crypto = require('crypto');
 const Place    = require('../models/Place.model');
 const Event    = require('../models/Event.model');
 const User     = require('../models/User.model');
@@ -143,46 +144,51 @@ const NOTIFICATIONS = [
 const seed = async () => {
   try {
     await connectDB();
-    console.log('\n🌱 Starting database seed...\n');
+    if (mongoose.connection.readyState !== 1) throw new Error('MongoDB is not connected; seed import was not run.');
+    console.log('\n🌱 Merging project seed data without deleting existing records...\n');
 
-    // Clear existing
-    await Promise.all([Place.deleteMany(), Event.deleteMany(), Notification.deleteMany()]);
-    console.log('🗑️  Cleared existing data');
+    const [placesResult, eventsResult, notificationsResult] = await Promise.all([
+      Place.bulkWrite(PLACES.map((place) => ({
+        updateOne: { filter: { placeId: place.placeId }, update: { $setOnInsert: place }, upsert: true },
+      })), { ordered: false }),
+      Event.bulkWrite(EVENTS.map((event) => ({
+        updateOne: { filter: { eventId: event.eventId }, update: { $setOnInsert: event }, upsert: true },
+      })), { ordered: false }),
+      Notification.bulkWrite(NOTIFICATIONS.map((notification) => ({
+        updateOne: {
+          filter: { user: null, type: notification.type, title: notification.title, message: notification.message },
+          update: { $setOnInsert: notification },
+          upsert: true,
+        },
+      })), { ordered: false }),
+    ]);
 
-    // Insert places
-    await Place.insertMany(PLACES);
-    console.log(`✅ Inserted ${PLACES.length} places`);
+    console.log(`✅ Places: ${placesResult.upsertedCount} added; ${placesResult.matchedCount} already present and preserved.`);
+    console.log(`✅ Events: ${eventsResult.upsertedCount} added; ${eventsResult.matchedCount} already present and preserved.`);
+    console.log(`✅ Notifications: ${notificationsResult.upsertedCount} added; ${notificationsResult.matchedCount} already present and preserved.`);
 
-    // Insert events
-    await Event.insertMany(EVENTS);
-    console.log(`✅ Inserted ${EVENTS.length} events`);
-
-    // Insert notifications
-    await Notification.insertMany(NOTIFICATIONS);
-    console.log(`✅ Inserted ${NOTIFICATIONS.length} notifications`);
-
-    // Create admin user (if not exists)
     const adminEmail = 'admin@kumbhsmart.in';
-    const existingAdmin = await User.findOne({ email: adminEmail });
+    const existingAdmin = await User.findOne({ email: adminEmail }).select('_id');
     if (!existingAdmin) {
       await User.create({
         name: 'KumbhSmart Admin',
         email: adminEmail,
-        password: 'Admin@2027',
+        password: crypto.randomBytes(24).toString('hex'),
         language: 'en',
         role: 'admin',
         isVerified: true,
       });
-      console.log('✅ Admin user created: admin@kumbhsmart.in / Admin@2027');
+      console.log('✅ Demo admin account created with a random password; use Quick Login for demo access.');
     } else {
-      console.log('ℹ️  Admin user already exists');
+      console.log('ℹ️  Existing admin account preserved.');
     }
 
-    console.log('\n🎉 Database seeded successfully!\n');
-    process.exit(0);
+    console.log('\n🎉 Non-destructive seed merge completed.\n');
   } catch (err) {
-    console.error('❌ Seeding failed:', err);
-    process.exit(1);
+    console.error('❌ Seeding failed:', err.message);
+    process.exitCode = 1;
+  } finally {
+    await mongoose.disconnect().catch(() => {});
   }
 };
 

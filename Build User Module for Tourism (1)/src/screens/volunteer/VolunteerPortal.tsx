@@ -23,107 +23,105 @@ const VolunteerPortal: React.FC<VolunteerPortalProps> = ({ user, onLogout }) => 
   
   const [activeSosList, setActiveSosList] = useState<any[]>([]);
   const [assignedSos, setAssignedSos] = useState<any | null>(null);
+  const [dutyStatus, setDutyStatus] = useState<'OFF_DUTY' | 'ON_DUTY' | 'RESPONDING' | 'BREAK'>('OFF_DUTY');
+  const [locationError, setLocationError] = useState('');
   
-  const countdownTimer = useRef<NodeJS.Timeout | null>(null);
-  const pollingTimer = useRef<NodeJS.Timeout | null>(null);
+  const countdownTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollingTimer = useRef<number | null>(null);
+  const assignedSosRef = useRef<any | null>(null);
+  const lastLocationSentAt = useRef(0);
 
-  // Initialize realtime and polling
+  const fetchActiveSos = useCallback(async () => {
+    try {
+      const response = await sosApi.getActiveSos();
+      setActiveSosList(response.data || []);
+    } catch (error) {
+      console.error('Failed to fetch nearby SOS requests:', error);
+    }
+  }, []);
+
   useEffect(() => {
-    // Start realtime service
     realtimeService.init();
-
-    const handleSosUpdate = (data: any) => {
-      // Refresh SOS list on real-time event
-      fetchActiveSos();
-    };
-
-    realtimeService.subscribe('sos-broadcast', handleSosUpdate);
-    realtimeService.subscribe('sos-alert', handleSosUpdate);
-    realtimeService.subscribe('trigger-sos', handleSosUpdate);
-
-    // Initial fetch
-    fetchActiveSos();
-
-    // Start polling every 3 seconds
-    pollingTimer.current = setInterval(() => {
-      fetchActiveSos();
-    }, 3000);
-
-    // Track location
-    const unsubscribeLocation = locationService.watchLocation(
-      (location: LocationData) => {
-        // Location updated - could send to server
+    const refresh = () => { void fetchActiveSos(); };
+    const onSosUpdate = (data: any) => {
+      if (data?.sosId && data.sosId === assignedSosRef.current?.sosId) {
+        void sosApi.getSosById(data.sosId).then((result) => setAssignedSos(result.data)).catch(() => {});
       }
-    );
+      refresh();
+    };
+    realtimeService.subscribe('sos-broadcast', refresh);
+    realtimeService.subscribe('sos-status-updated', onSosUpdate);
+    realtimeService.subscribe('sos-responder-location', onSosUpdate);
+    void fetchActiveSos();
+    void sosApi.getVolunteerDuty().then((result) => setDutyStatus(result.data.dutyStatus)).catch(() => {});
+    pollingTimer.current = window.setInterval(refresh, 5000);
 
+    const savedAssignment = localStorage.getItem('kumbh_assigned_sos');
+    if (savedAssignment) void sosApi.getSosById(savedAssignment).then((result) => setAssignedSos(result.data)).catch(() => localStorage.removeItem('kumbh_assigned_sos'));
+    const unsubscribeLocation = locationService.watchLocation((location: LocationData) => {
+      const now = Date.now();
+      if (location.accuracy > 100) { setLocationError(`GPS accuracy is low (±${Math.round(location.accuracy)} m).`); return; }
+      setLocationError('');
+      if (now - lastLocationSentAt.current < 15000) return;
+      lastLocationSentAt.current = now;
+      void sosApi.updateVolunteerLocation(location.lat, location.lng, location.accuracy, location.timestamp).catch(() => {});
+      const assignment = assignedSosRef.current;
+      if (assignment?.sosId && ['ACCEPTED', 'EN_ROUTE', 'NEARBY', 'ARRIVED', 'ASSISTING'].includes(assignment.status)) {
+        void sosApi.updateLocation(assignment.sosId, location.lat, location.lng, location.accuracy, location.timestamp).catch(() => {});
+        setAssignedSos((current: any) => current?.sosId === assignment.sosId ? { ...current, responderLocation: { type: 'Point', coordinates: [location.lng, location.lat] }, responderLocationUpdatedAt: new Date(location.timestamp) } : current);
+      }
+    }, (error) => setLocationError(error.message));
     return () => {
-      realtimeService.unsubscribe('sos-broadcast', handleSosUpdate);
-      realtimeService.unsubscribe('sos-alert', handleSosUpdate);
-      realtimeService.unsubscribe('trigger-sos', handleSosUpdate);
-      if (pollingTimer.current) clearInterval(pollingTimer.current);
+      realtimeService.unsubscribe('sos-broadcast', refresh);
+      realtimeService.unsubscribe('sos-status-updated', onSosUpdate);
+      realtimeService.unsubscribe('sos-responder-location', onSosUpdate);
+      if (pollingTimer.current) window.clearInterval(pollingTimer.current);
       unsubscribeLocation();
     };
-  }, [user]);
+  }, [fetchActiveSos]);
 
-  const fetchActiveSos = async () => {
-    try {
-      if (sosApi && sosApi.getActiveSos) {
-        const response = await sosApi.getActiveSos();
-        if (response && response.data) {
-          setActiveSosList(response.data);
-        }
-      }
-    } catch (err) {
-      console.error('Failed to fetch active SOS:', err);
-    }
-  };
+  useEffect(() => { assignedSosRef.current = assignedSos; }, [assignedSos]);
 
   const handleAcceptSos = async (sosInput: any) => {
+    const sosId = typeof sosInput === 'string' ? sosInput : sosInput.sosId;
     try {
-      const sosId = typeof sosInput === 'string' ? sosInput : (sosInput.sosId || sosInput._id || sosInput.id);
-      if (sosApi && sosApi.acceptSos) {
-        const response = await sosApi.acceptSos(sosId, user.mobile || user.email, user.name);
-        if (response && response.data) {
-          setAssignedSos(response.data);
-          if (realtimeService && realtimeService.emit) {
-            realtimeService.emit('sos-accepted', response.data);
-          }
-          fetchActiveSos();
-        }
+      const response = await sosApi.acceptSos(sosId);
+      if (response.data) {
+        localStorage.setItem('kumbh_assigned_sos', sosId);
+        setAssignedSos(response.data);
+        await fetchActiveSos();
       }
     } catch (error) {
-      console.error('Error accepting SOS:', error);
+      window.alert(error instanceof Error ? error.message : 'Could not accept this SOS.');
     }
   };
 
-  const handleRejectSos = (sosInput: any) => {
-    const sosId = typeof sosInput === 'string' ? sosInput : (sosInput.sosId || sosInput._id || sosInput.id);
-    setActiveSosList(prev => prev.filter(s => (s.sosId || s._id || s.id) !== sosId));
-    if (sosApi && sosApi.rejectSos) {
-      sosApi.rejectSos(sosId, user.mobile || user.email, 'Volunteer busy').catch(() => {});
+  const handleRejectSos = async (sosInput: any) => {
+    const sosId = typeof sosInput === 'string' ? sosInput : sosInput.sosId;
+    try {
+      await sosApi.rejectSos(sosId, 'Volunteer unavailable');
+      setActiveSosList((previous) => previous.filter((sos) => sos.sosId !== sosId));
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : 'Could not pass this SOS.');
     }
   };
 
   const handleUpdateSosStatus = async (sosId: string, status: string, remarks?: string) => {
     try {
-      if (sosApi && sosApi.updateStatus) {
-        const response = await sosApi.updateStatus(sosId, status, remarks);
-        if (realtimeService && realtimeService.emit) {
-          realtimeService.emit('sos-status-updated', { sosId, status, notes: remarks });
-        }
-        if (status === 'RESOLVED' || status === 'resolved') {
-          setAssignedSos(null);
-          alert('✅ Emergency marked as RESOLVED! Thank you for your service.');
-        } else {
-          setAssignedSos(response?.data || assignedSos);
-        }
-        fetchActiveSos();
+      const response = await sosApi.updateStatus(sosId, status, remarks);
+      if (status === 'RESOLVED') {
+        setAssignedSos(null);
+        assignedSosRef.current = null;
+        localStorage.removeItem('kumbh_assigned_sos');
+        window.alert('Emergency response completed. Thank you for helping.');
+      } else {
+        setAssignedSos(response.data || assignedSosRef.current);
       }
+      await fetchActiveSos();
     } catch (error) {
-      console.error('Error updating SOS status', error);
+      window.alert(error instanceof Error ? error.message : 'Could not update SOS status.');
     }
   };
-
   // SOS activation flow
   const startSosActivation = () => {
     setSosActivating(true);
@@ -149,48 +147,21 @@ const VolunteerPortal: React.FC<VolunteerPortalProps> = ({ user, onLogout }) => 
   };
 
   const triggerSosApi = async () => {
+    setSosActivating(true);
     try {
-      let loc = { latitude: 0, longitude: 0 };
-      if (locationService && locationService.getCurrentLocation) {
-        loc = await locationService.getCurrentLocation();
-      }
-
-      const sosData = {
-        userId: user.email || user.mobile,
-        userName: user.name,
-        userMobile: user.mobile,
-        latitude: loc.latitude,
-        longitude: loc.longitude,
-        timestamp: new Date().toISOString(),
-        type: 'volunteer_sos'
-      };
-
-      let res: any;
-      if (sosApi && sosApi.createSos) {
-        res = await sosApi.createSos(sosData);
-      }
-      
-      if (realtimeService && realtimeService.emit) {
-        realtimeService.emit('trigger-sos', sosData);
-      }
-
-      // Store history in local storage
+      const location = await locationService.getCurrentLocation(100);
+      const result = await sosApi.createSos({ category: 'sos', location: { type: 'Point', coordinates: [location.lng, location.lat] }, accuracy: location.accuracy, timestamp: location.timestamp, message: 'Volunteer requested emergency assistance.' });
       const existing = JSON.parse(localStorage.getItem('kumbh_sos_history') || '[]');
-      existing.push({ ...sosData, id: res?.data?.id || Date.now() });
-      localStorage.setItem('kumbh_sos_history', JSON.stringify(existing));
-
+      localStorage.setItem('kumbh_sos_history', JSON.stringify([result.data, ...existing].slice(0, 20)));
       setSosActivating(false);
       setShowSosModal(false);
-      alert('SOS Alert Sent Successfully');
-      
-    } catch (err) {
-      console.error('Error creating SOS:', err);
+      window.alert('SOS request sent.');
+    } catch (error) {
       setSosActivating(false);
       setShowSosModal(false);
-      alert('Failed to send SOS. Please check your connection.');
+      window.alert(error instanceof Error ? error.message : 'SOS could not be sent.');
     }
   };
-
   const renderTabContent = () => {
     switch (activeTab) {
       case 'home':
@@ -201,13 +172,14 @@ const VolunteerPortal: React.FC<VolunteerPortalProps> = ({ user, onLogout }) => 
                  onRejectSos={handleRejectSos}
                  assignedSos={assignedSos}
                  onUpdateSosStatus={handleUpdateSosStatus}
+                 dutyStatus={dutyStatus} locationError={locationError} onDutyChange={async (status) => { const result = await sosApi.updateVolunteerDuty(status); setDutyStatus(result.data.dutyStatus); }}
                />;
       case 'duties':
         return <VolunteerDuties user={user} />;
       case 'map':
         return <VolunteerMap user={user} />;
       case 'alerts':
-        return <VolunteerAlerts user={user} activeSosList={activeSosList} />;
+        return <VolunteerAlerts user={user} activeSosList={activeSosList} onAcceptSos={handleAcceptSos} onRejectSos={handleRejectSos} />;
       case 'profile':
         return <VolunteerProfile user={user} onLogout={onLogout} />;
       default:
@@ -218,6 +190,7 @@ const VolunteerPortal: React.FC<VolunteerPortalProps> = ({ user, onLogout }) => 
                  onRejectSos={handleRejectSos}
                  assignedSos={assignedSos}
                  onUpdateSosStatus={handleUpdateSosStatus}
+                 dutyStatus={dutyStatus} locationError={locationError} onDutyChange={async (status) => { const result = await sosApi.updateVolunteerDuty(status); setDutyStatus(result.data.dutyStatus); }}
                />;
     }
   };

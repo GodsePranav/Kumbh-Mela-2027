@@ -31,6 +31,9 @@ type Screen =
 interface NavigationEntry { screen: Screen; params: unknown }
 
 export interface User {
+  _id?: string;
+  id?: string;
+  token?: string;
   name: string;
   email: string;
   language: string;
@@ -51,7 +54,7 @@ function getSavedUser(): User | null {
     if (!parsed || typeof parsed !== 'object') return null;
 
     const candidate = parsed as Partial<User>;
-    if (typeof candidate.name !== 'string' || typeof candidate.email !== 'string') return null;
+    if (typeof candidate.name !== 'string' || typeof candidate.email !== 'string' || typeof (candidate as any).token !== 'string') return null;
     return candidate as User;
   } catch {
     // Treat unreadable or malformed persisted data as a signed-out session.
@@ -126,6 +129,7 @@ export default function App() {
   const handleLogout = () => {
     setUser(null);
     localStorage.removeItem('kumbh_user');
+    import('./services/realtimeService').then(({ realtimeService }) => realtimeService.disconnect());
     localStorage.removeItem('kumbh_sos_history');
     localStorage.removeItem('kumbh_active_sos');
     setScreen('auth');

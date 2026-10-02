@@ -4,7 +4,6 @@ import {
   ChevronUp,
   Cross,
   Droplet,
-  Layers,
   MapPin,
   Navigation,
   RefreshCw,
@@ -39,6 +38,7 @@ function formatDistance(meters: number): string {
 
 function VolunteerMap({ user }: VolunteerMapProps) {
   const [activeLayer, setActiveLayer] = useState<MapLayer>('facilities');
+  const [overlayMenuOpen, setOverlayMenuOpen] = useState(false);
   const [infoExpanded, setInfoExpanded] = useState(true);
   const [position, setPosition] = useState<MapPosition | null>(null);
   const [locating, setLocating] = useState(false);
@@ -131,7 +131,7 @@ function VolunteerMap({ user }: VolunteerMapProps) {
         lng: marker.lng,
         color,
         glyph,
-        accuracy: marker.accuracy,
+        accuracy: marker.accuracy as MapPoint['accuracy'],
         sourceUrl: marker.sourceUrl,
         onClick: () => chooseDestination({ id: marker.id, name: place?.name ?? marker.name, lat: marker.lat, lng: marker.lng }),
       };
@@ -188,9 +188,10 @@ function VolunteerMap({ user }: VolunteerMapProps) {
     setRouteError(message ?? null);
   };
 
-  const cycleLayer = () => setActiveLayer((layer) => (
-    layer === 'facilities' ? 'crowd' : layer === 'crowd' ? 'zones' : 'facilities'
-  ));
+  const selectOverlay = (layer: MapLayer) => {
+    setActiveLayer(layer);
+    setOverlayMenuOpen(false);
+  };
 
   const handleRefresh = () => {
     setLastUpdated(new Date());
@@ -248,10 +249,31 @@ function VolunteerMap({ user }: VolunteerMapProps) {
           className="h-full"
         />
 
-        <button type="button" onClick={cycleLayer} aria-label={`Map overlay: ${activeLayer}. Change overlay.`}
-          className="absolute left-4 top-4 z-10 rounded-xl border border-stone-200 bg-white p-2 text-stone-600 shadow-md hover:bg-stone-50">
-          <Layers className="h-5 w-5" />
-        </button>
+        <div className="absolute left-4 top-4 z-20">
+          <button type="button" onClick={() => setOverlayMenuOpen((open) => !open)}
+            aria-expanded={overlayMenuOpen} aria-haspopup="menu" aria-label="Volunteer map overlays"
+            title="Choose operational overlay"
+            className="flex h-11 w-11 items-center justify-center rounded-full border border-stone-200 bg-white text-blue-700 shadow-md transition hover:bg-blue-50 active:scale-95">
+            {activeLayer === 'facilities' ? <MapPin className="h-5 w-5" /> : activeLayer === 'crowd' ? <Users className="h-5 w-5" /> : <Shield className="h-5 w-5" />}
+          </button>
+          {overlayMenuOpen && <div role="menu" aria-label="Operational map overlays"
+            className="absolute left-0 top-14 w-48 overflow-hidden rounded-xl border border-stone-200 bg-white p-1 shadow-xl">
+            {([
+              { id: 'facilities', label: 'Facilities', icon: <MapPin className="h-4 w-4" /> },
+              { id: 'crowd', label: 'Crowd areas', icon: <Users className="h-4 w-4" /> },
+              { id: 'zones', label: 'Operating zones', icon: <Shield className="h-4 w-4" /> },
+            ] as const).map((overlay) => (
+              <button key={overlay.id} type="button" role="menuitemradio"
+                aria-checked={activeLayer === overlay.id}
+                onClick={() => selectOverlay(overlay.id)}
+                className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+                style={activeLayer === overlay.id ? { backgroundColor: '#fff7ed', color: '#c2410c' } : undefined}>
+                {overlay.icon}<span>{overlay.label}</span>
+                {activeLayer === overlay.id && <span className="ml-auto text-xs font-semibold">Selected</span>}
+              </button>
+            ))}
+          </div>}
+        </div>
         {stops.length > 0 && <div className="absolute left-3 top-3 z-10 flex items-center gap-2 rounded-lg bg-white px-3 py-2 text-xs font-semibold text-slate-700 shadow">
           <Navigation className="h-4 w-4 text-orange-600" /> {stops.length} route stop{stops.length > 1 ? 's' : ''}
           <button type="button" onClick={clearRoute} className="ml-1 text-red-600">Clear</button>

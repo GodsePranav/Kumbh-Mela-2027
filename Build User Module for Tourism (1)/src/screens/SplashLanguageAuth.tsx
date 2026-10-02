@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { LANGUAGES } from '../data/mockData';
+import { authApi } from '../services/api';
 
 type AuthStep = 'splash' | 'language' | 'login' | 'register' | 'otp' | 'forgot';
 
 interface SplashLanguageAuthProps {
-  onAuthComplete: (user: { name: string; email: string; language: string }) => void;
+  onAuthComplete: (user: { name: string; email: string; language: string; role?: 'user' | 'volunteer' | 'admin'; _id?: string; token?: string; mobile?: string }) => void;
 }
 
 export default function SplashLanguageAuth({ onAuthComplete }: SplashLanguageAuthProps) {
@@ -59,85 +60,42 @@ export default function SplashLanguageAuth({ onAuthComplete }: SplashLanguageAut
     }
   };
 
-  const handleVerifyOtp = () => {
+  const handleVerifyOtp = async () => {
     const otp = formData.otp.join('');
+    if (otp !== '123456') { setErrors({ otp: 'Enter the demo verification code 123456.' }); return; }
     setLoading(true);
-    setTimeout(() => {
-      setLoading(false);
-      if (otp === '123456' || otp.length === 6) {
-        onAuthComplete({ name: formData.name || 'Pilgrim', email: formData.email, language: selectedLang });
-      } else {
-        setErrors({ otp: 'Invalid OTP. Try 123456 for demo.' });
-      }
-    }, 1200);
+    try {
+      const response = await authApi.register({ name: formData.name, email: formData.email, password: formData.password, mobile: formData.mobile, language: selectedLang, emergencyContact: formData.emergencyContact });
+      onAuthComplete({ ...response.data.user, token: response.data.token, language: selectedLang });
+    } catch (error) {
+      setErrors({ email: error instanceof Error ? error.message : 'Registration failed.' });
+    } finally { setLoading(false); }
   };
 
   const handleLogin = async () => {
     const errs: Record<string, string> = {};
-    if (!formData.email.trim()) errs.email = 'Mobile/Email is required';
+    if (!formData.email.trim()) errs.email = 'Email is required';
     if (!formData.password.trim()) errs.password = 'Password is required';
-
     setErrors(errs);
-    if (Object.keys(errs).length > 0) return;
-
+    if (Object.keys(errs).length) return;
     setLoading(true);
     try {
-      const response = await fetch('http://localhost:5000/api/v1/auth/quick-login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: formData.name || 'User',
-          emailOrMobile: formData.email,
-          password: formData.password,
-        }),
-      });
-
-      const data = await response.json();
-      setLoading(false);
-
-      const role = formData.email.toLowerCase().includes('volunteer')
-        ? 'volunteer'
-        : formData.email.toLowerCase().includes('admin')
-        ? 'admin'
-        : 'user';
-
-      if (data.success && data.data && data.data.user) {
-        onAuthComplete({
-          name: data.data.user.name,
-          email: data.data.user.email,
-          role: data.data.user.role || role,
-          language: selectedLang,
-        });
-      } else {
-        onAuthComplete({
-          name: formData.name || (role === 'volunteer' ? 'Rahul Sharma' : role === 'admin' ? 'Control Room Admin' : 'Pilgrim'),
-          email: formData.email,
-          role,
-          language: selectedLang,
-        });
-      }
+      const response = await authApi.login(formData.email, formData.password);
+      onAuthComplete({ ...response.data.user, token: response.data.token, language: response.data.user.language || selectedLang });
     } catch (error) {
-      setLoading(false);
-      const role = formData.email.toLowerCase().includes('volunteer') ? 'volunteer' : formData.email.toLowerCase().includes('admin') ? 'admin' : 'user';
-      onAuthComplete({
-        name: formData.name || (role === 'volunteer' ? 'Rahul Sharma' : role === 'admin' ? 'Control Room Admin' : 'Pilgrim'),
-        email: formData.email,
-        role,
-        language: selectedLang,
-      });
-    }
+      setErrors({ email: error instanceof Error ? error.message : 'Unable to sign in.' });
+    } finally { setLoading(false); }
   };
 
-  const handleQuickDemoLogin = (role: 'volunteer' | 'user' | 'admin') => {
-    if (role === 'volunteer') {
-      onAuthComplete({ name: 'Rahul Sharma (Volunteer)', email: 'volunteer@kumbhsmart.in', role: 'volunteer', language: 'en' });
-    } else if (role === 'admin') {
-      onAuthComplete({ name: 'Control Room Admin', email: 'admin@kumbhsmart.in', role: 'admin', language: 'en' });
-    } else {
-      onAuthComplete({ name: 'Pilgrim User', email: 'pilgrim@kumbhsmart.in', role: 'user', language: 'en' });
-    }
+  const handleQuickDemoLogin = async (role: 'volunteer' | 'user' | 'admin') => {
+    setLoading(true);
+    try {
+      const response = await authApi.demoLogin(role);
+      onAuthComplete({ ...response.data.user, token: response.data.token, language: 'en' });
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : 'Demo login is unavailable.');
+    } finally { setLoading(false); }
   };
-
   // SPLASH SCREEN
   if (step === 'splash') {
     return (

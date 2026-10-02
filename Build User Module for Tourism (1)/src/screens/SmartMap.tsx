@@ -222,7 +222,7 @@ export default function SmartMap({ onNavigate, onBack, routeParams }: SmartMapPr
     lng: place.lng,
     color: place.color,
     glyph: place.glyph,
-    accuracy: place.accuracy,
+    accuracy: place.accuracy as MapPoint['accuracy'],
     sourceUrl: place.sourceUrl,
     onClick: () => chooseDestination({ lat: place.lat, lng: place.lng, name: place.name }),
   })), [chooseDestination]);

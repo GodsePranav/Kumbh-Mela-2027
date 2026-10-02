@@ -8,6 +8,8 @@ const express = require('express');
 const cors = require('cors');
 const morgan = require('morgan');
 const connectDB = require('./config/db');
+const jwt = require('jsonwebtoken');
+const User = require('./models/User.model');
 
 // ─── Route Imports ────────────────────────────────────────────────────────────
 const authRoutes         = require('./routes/auth.routes');
@@ -34,43 +36,28 @@ const http = require('http');
 const { Server } = require('socket.io');
 const server = http.createServer(app);
 
-const io = new Server(server, {
-  cors: {
-    origin: process.env.CLIENT_URL || 'http://localhost:8443',
-    methods: ["GET", "POST"]
-  }
-});
+const allowedOrigins = new Set([...(process.env.CLIENT_URL || '').split(','), 'http://localhost:5173', 'http://127.0.0.1:5173', 'http://localhost:8443', 'http://127.0.0.1:8443', 'http://localhost:8444', 'http://127.0.0.1:8444'].map((value) => value.trim()).filter(Boolean));
+const originAllowed = (origin) => !origin || allowedOrigins.has(origin);
+const io = new Server(server, { cors: { origin: (origin, callback) => callback(null, originAllowed(origin)), methods: ['GET', 'POST'] } });
 app.set('io', io);
-
-// Socket.io Events Setup
+io.use(async (socket, next) => {
+  try {
+    const token = socket.handshake.auth?.token;
+    if (!token) return next(new Error('Authentication required'));
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const user = await User.findById(decoded.id).select('_id role isActive');
+    if (!user || !user.isActive) return next(new Error('Invalid session'));
+    socket.data.user = { id: String(user._id), role: user.role };
+    next();
+  } catch { next(new Error('Invalid session')); }
+});
 io.on('connection', (socket) => {
-  console.log(`🔌 New client connected: ${socket.id}`);
+  const { id, role } = socket.data.user;
+  socket.join(`user:${id}`);
+  socket.join(`role:${role}`);
+  console.log(`Authenticated socket connected for user ${id}`);
 
-  socket.on('join-room', (room) => {
-    socket.join(room);
-    console.log(`Socket ${socket.id} joined room: ${room}`);
-  });
-
-  socket.on('trigger-sos', (data) => {
-    // data expected: { userId, location: { lat, lng }, emergencyType }
-    console.log(`🚨 SOS Triggered by user ${data.userId}`);
-    // Broadcast to volunteers
-    io.emit('sos-alert', data);
-  });
-
-  socket.on('acknowledge-sos', (data) => {
-    // data expected: { alertId, volunteerId, volunteerName }
-    console.log(`✅ SOS Acknowledged by ${data.volunteerName}`);
-    io.emit('sos-acknowledged', data);
-  });
-
-  socket.on('resolve-sos', (data) => {
-    // data expected: { alertId, volunteerId }
-    console.log(`🏁 SOS Resolved: ${data.alertId}`);
-    io.emit('sos-resolved', data);
-  });
-
-  // Step 3: Crowd Management - Geofence Broadcast
+  // SOS state mutations are API-only; clients cannot spoof status broadcasts.  // Step 3: Crowd Management - Geofence Broadcast
   socket.on('broadcast-geofence-alert', (data) => {
     // data expected: { center: { lat, lng }, radius, message, volunteerId }
     console.log(`⚠️ Geofence Alert from ${data.volunteerId}: ${data.message}`);
@@ -108,10 +95,7 @@ io.on('connection', (socket) => {
 connectDB();
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
-app.use(cors({
-  origin: process.env.CLIENT_URL || 'http://localhost:8443',
-  credentials: true,
-}));
+app.use(cors({ origin: (origin, callback) => callback(null, originAllowed(origin)), credentials: true }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 if (process.env.NODE_ENV === 'development') {

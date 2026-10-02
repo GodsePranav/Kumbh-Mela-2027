@@ -15,6 +15,8 @@ import {
 interface VolunteerAlertsProps {
   user: { name: string; email: string; mobile?: string };
   activeSosList: any[];
+  onAcceptSos?: (sosId: string) => Promise<void>;
+  onRejectSos?: (sosId: string) => Promise<void>;
 }
 
 type FilterType = 'All' | 'SOS' | 'Crowd' | 'Tasks' | 'Announcements';
@@ -29,35 +31,31 @@ interface AlertItem {
   location?: string;
   icon: React.ReactNode;
   actionText?: string;
-  rawSos?: any;
 }
 
-export const VolunteerAlerts: React.FC<VolunteerAlertsProps> = ({ user, activeSosList = [] }) => {
+export const VolunteerAlerts: React.FC<VolunteerAlertsProps> = ({ user, activeSosList = [], onAcceptSos, onRejectSos }) => {
   const [activeFilter, setActiveFilter] = useState<FilterType>('All');
   const [selectedAlert, setSelectedAlert] = useState<AlertItem | null>(null);
+  const [isResponding, setIsResponding] = useState(false);
 
-  // Convert activeSosList to alerts safely
+  // Incoming alerts contain only the minimum details needed before acceptance.
   const sosAlerts: AlertItem[] = (activeSosList || []).map((sos, idx) => {
-    let locationStr = sos.locationText || 'Ram Ghat Sector B';
-    if (sos.location && Array.isArray(sos.location.coordinates)) {
-      locationStr = `${sos.locationText || 'Ghat Zone'} (${sos.location.coordinates[1]?.toFixed(4) || '19.9975'}°N, ${sos.location.coordinates[0]?.toFixed(4) || '73.7898'}°E)`;
-    }
-
     const timeStr = sos.createdAt || sos.timestamp
       ? new Date(sos.createdAt || sos.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       : 'Just now';
+    const approximateDistance = Number.isFinite(Number(sos.approximateDistanceMeters))
+      ? `Approximately ${Math.max(0, Math.round(Number(sos.approximateDistanceMeters) / 100) * 100)} m away`
+      : 'Nearby emergency request';
 
     return {
       id: sos.sosId || `sos-${idx}`,
       type: 'sos',
       priority: 'high',
-      title: `🚨 P0 SOS: ${sos.category ? sos.category.toUpperCase() : 'EMERGENCY'}`,
-      description: `Pilgrim: ${sos.userName || 'Pilgrim in Distress'} (${sos.userPhone || '9876543210'}) - Status: ${sos.status || 'BROADCASTING'}`,
+      title: `🚨 Emergency request: ${sos.category ? sos.category.replace(/_/g, ' ').toUpperCase() : 'SOS'}`,
+      description: `${approximateDistance} · Status: ${sos.status || 'BROADCASTING'}`,
       time: timeStr,
-      location: locationStr,
       icon: <AlertTriangle className="text-red-500" size={24} />,
-      actionText: 'Respond to Emergency',
-      rawSos: sos,
+      actionText: 'View response options',
     };
   });
 
@@ -292,14 +290,39 @@ export const VolunteerAlerts: React.FC<VolunteerAlertsProps> = ({ user, activeSo
             </div>
 
             <div className="pt-2">
-              <button
-                onClick={() => {
-                  alert(`Action recorded for: ${selectedAlert.title}`);
-                  setSelectedAlert(null);
-                }}
-                className="w-full bg-[#E8702A] hover:bg-orange-600 text-white font-bold text-xs py-3 rounded-xl shadow transition">
-                Confirm & Acknowledge Action
-              </button>
+              {selectedAlert.type === 'sos' ? (
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    disabled={isResponding}
+                    onClick={async () => {
+                      setIsResponding(true);
+                      try { await onRejectSos?.(selectedAlert.id); setSelectedAlert(null); }
+                      finally { setIsResponding(false); }
+                    }}
+                    className="rounded-xl border border-stone-300 py-3 text-xs font-bold text-stone-700 disabled:opacity-50">
+                    Pass request
+                  </button>
+                  <button
+                    disabled={isResponding}
+                    onClick={async () => {
+                      setIsResponding(true);
+                      try { await onAcceptSos?.(selectedAlert.id); setSelectedAlert(null); }
+                      finally { setIsResponding(false); }
+                    }}
+                    className="rounded-xl bg-[#E8702A] py-3 text-xs font-bold text-white shadow transition hover:bg-orange-600 disabled:opacity-50">
+                    {isResponding ? 'Sending…' : 'Accept SOS'}
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => {
+                    alert(`Action recorded for: ${selectedAlert.title}`);
+                    setSelectedAlert(null);
+                  }}
+                  className="w-full bg-[#E8702A] hover:bg-orange-600 text-white font-bold text-xs py-3 rounded-xl shadow transition">
+                  Confirm & Acknowledge Action
+                </button>
+              )}
             </div>
           </div>
         </div>

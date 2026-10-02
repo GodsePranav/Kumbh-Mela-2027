@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { GoogleNavigationMap, MapPosition } from '../../../maps/googleMaps';
 import { 
   AlertCircle, 
   MapPin, 
@@ -14,6 +15,11 @@ import {
   Radio
 } from 'lucide-react';
 
+const getPriorityColor = (priority?: string) => priority === 'P0'
+  ? 'bg-red-100 text-red-700'
+  : priority === 'P1'
+    ? 'bg-amber-100 text-amber-700'
+    : 'bg-stone-100 text-stone-700';
 interface VolunteerHomeProps {
   user: { name: string; email: string; mobile?: string };
   activeSosList: any[];
@@ -21,6 +27,9 @@ interface VolunteerHomeProps {
   onAcceptSos: (sos: any) => void;
   onRejectSos: (sos: any) => void;
   onUpdateSosStatus: (sosId: string, status: string) => void;
+  onDutyChange?: (status: 'OFF_DUTY' | 'ON_DUTY' | 'BREAK') => Promise<void>;
+  dutyStatus?: 'OFF_DUTY' | 'ON_DUTY' | 'RESPONDING' | 'BREAK';
+  locationError?: string;
 }
 
 export const VolunteerHome: React.FC<VolunteerHomeProps> = ({
@@ -29,18 +38,25 @@ export const VolunteerHome: React.FC<VolunteerHomeProps> = ({
   assignedSos,
   onAcceptSos,
   onRejectSos,
-  onUpdateSosStatus
+  onUpdateSosStatus,
+  onDutyChange,
+  dutyStatus: serverDutyStatus = 'OFF_DUTY',
+  locationError = ''
 }) => {
   const [processingId, setProcessingId] = useState<string | null>(null);
   const [isCheckedIn, setIsCheckedIn] = useState(false);
-  const [dutyStatus, setDutyStatus] = useState<'OFF_DUTY' | 'ON_DUTY' | 'BREAK'>('OFF_DUTY');
+  const [dutyStatus, setDutyStatus] = useState<'OFF_DUTY' | 'ON_DUTY' | 'RESPONDING' | 'BREAK'>(serverDutyStatus);
+  React.useEffect(() => setDutyStatus(serverDutyStatus), [serverDutyStatus]);
   const isOutsideZone = false;
+  const sosCoordinates = assignedSos?.location?.coordinates;
+  const destination: MapPosition | null = Array.isArray(sosCoordinates) && sosCoordinates.length >= 2 ? { lat: Number(sosCoordinates[1]), lng: Number(sosCoordinates[0]) } : null;
+  const responderCoordinates = assignedSos?.responderLocation?.coordinates;
+  const responder: MapPosition | null = Array.isArray(responderCoordinates) && responderCoordinates.length >= 2 ? { lat: Number(responderCoordinates[1]), lng: Number(responderCoordinates[0]) } : null;
 
-  const handleDutyToggle = (status: 'OFF_DUTY' | 'ON_DUTY' | 'BREAK') => {
-    setDutyStatus(status);
-    setIsCheckedIn(status === 'ON_DUTY');
+  const handleDutyToggle = async (status: 'OFF_DUTY' | 'ON_DUTY' | 'BREAK') => {
+    try { await onDutyChange?.(status); setDutyStatus(status); setIsCheckedIn(status === 'ON_DUTY'); }
+    catch (error) { window.alert(error instanceof Error ? error.message : 'Could not update duty status.'); }
   };
-
   const handleAcceptWithLock = async (sos: any) => {
     const id = sos.sosId || sos._id || sos.id;
     setProcessingId(id);
@@ -125,6 +141,8 @@ export const VolunteerHome: React.FC<VolunteerHomeProps> = ({
         </div>
 
         <div className="px-5 space-y-5">
+          {locationError && <div role="status" className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">{locationError} SOS alerts require a verified volunteer on duty with a recent GPS fix.</div>}
+
           {/* 2. Geofence Alert Banner */}
           {isOutsideZone && (
             <div className="bg-red-50 border border-red-200 rounded-2xl p-4 flex items-start shadow-sm animate-pulse">
@@ -183,7 +201,7 @@ export const VolunteerHome: React.FC<VolunteerHomeProps> = ({
                 <div className="flex items-center text-red-700 font-bold text-xs space-x-2">
                   <span className="w-2.5 h-2.5 rounded-full bg-red-600 animate-pulse"></span>
                   <span>ACTIVE EMERGENCY ASSIGNED</span>
-                  <span className="font-mono text-stone-700">({assignedSos.sosId || 'SOS-2027-000101'})</span>
+                  <span className="font-mono text-stone-700">({assignedSos.sosId})</span>
                 </div>
                 <span className="text-[10px] font-black text-red-700 bg-red-200 px-2 py-0.5 rounded-full">
                   {assignedSos.priority || 'P0'} PRIORITY
@@ -192,29 +210,29 @@ export const VolunteerHome: React.FC<VolunteerHomeProps> = ({
               <div className="p-4 space-y-4">
                 <div className="flex justify-between items-start">
                   <div>
-                    <h4 className="font-bold text-stone-900 text-base" style={{ fontFamily: 'Poppins' }}>{assignedSos.userName || 'Pilgrim in Distress'}</h4>
+                    <h4 className="font-bold text-stone-900 text-base" style={{ fontFamily: 'Poppins' }}>Emergency requester</h4>
                     <p className="text-xs text-stone-500">Emergency: <strong className="uppercase text-stone-800">{assignedSos.category || 'Medical'}</strong></p>
-                    <p className="text-xs text-stone-500 mt-0.5">Phone: <strong className="text-stone-800">{assignedSos.userPhone || '9876543210'}</strong></p>
+                    {assignedSos.userPhone && <p className="text-xs text-stone-500 mt-0.5">Phone: <strong className="text-stone-800">{assignedSos.userPhone}</strong></p>}
                   </div>
-                  <a href={`tel:${assignedSos.userPhone || '9876543210'}`} className="bg-emerald-500 text-white p-2.5 rounded-2xl flex items-center justify-center shadow">
-                    <Phone size={18} />
-                  </a>
+                  {assignedSos.userPhone && <a href={`tel:${assignedSos.userPhone}`} className="bg-emerald-500 text-white p-2.5 rounded-2xl flex items-center justify-center shadow" aria-label="Call emergency requester"><Phone size={18} /></a>}
                 </div>
                 
                 <div className="bg-stone-50 rounded-xl p-3 flex justify-between items-center text-xs border border-stone-200">
                   <div className="flex items-center text-stone-700">
                     <Navigation size={14} className="mr-1.5 text-[#E8702A]"/>
-                    <span className="font-bold">{assignedSos.distanceMeters ? `${assignedSos.distanceMeters}m away` : '320m away'}</span>
+                    <span className="font-bold">{assignedSos.distanceMeters != null ? `${(assignedSos.distanceMeters / 1000).toFixed(1)} km away` : 'Calculating route…'}</span>
                   </div>
                   <div className="flex items-center text-stone-700">
                     <Clock size={14} className="mr-1.5 text-[#E8702A]"/>
-                    <span className="font-bold">{assignedSos.etaSeconds ? `~${Math.ceil(assignedSos.etaSeconds / 60)} mins ETA` : '~3 mins ETA'}</span>
+                    <span className="font-bold">{assignedSos.etaSeconds != null ? `~${Math.max(1, Math.ceil(assignedSos.etaSeconds / 60))} mins ETA` : 'ETA updating'}</span>
                   </div>
                 </div>
                 <div className="text-xs text-red-600 font-semibold flex items-start">
                   <MapPin size={14} className="mr-1.5 mt-0.5 shrink-0"/>
-                  <span>📍 Location: {assignedSos.locationText || assignedSos.locationName || 'Ram Ghat Sector B, Gate 2'}</span>
+                  <span>{destination ? `Emergency GPS: ${destination.lat.toFixed(6)}, ${destination.lng.toFixed(6)}` : 'Exact location unavailable'}</span>
                 </div>
+
+                {destination && <GoogleNavigationMap center={destination} position={responder} positionTitle="Volunteer location" markers={[{ id: 'sos-target', title: 'Emergency location', ...destination, glyph: 'SOS', color: '#dc2626' }]} stops={[{ id: 'sos-target', label: 'Emergency location', ...destination }]} className="h-64 w-full overflow-hidden rounded-xl border border-stone-200" zoom={15} />}
 
                 {/* State Machine Transition */}
                 <div className="pt-2 border-t border-stone-100">
@@ -270,7 +288,7 @@ export const VolunteerHome: React.FC<VolunteerHomeProps> = ({
                     <CheckCircle2 className="text-emerald-500" size={30} />
                   </div>
                   <h4 className="text-stone-800 font-bold text-sm" style={{ fontFamily: 'Poppins' }}>Sector Clear</h4>
-                  <p className="text-stone-500 text-xs mt-1">No active P0 emergency SOS broadcasts in Ram Ghat Sector B.</p>
+                  <p className="text-stone-500 text-xs mt-1">No open SOS requests are currently near your reported location. Enable GPS and set your duty status to On Duty to receive alerts.</p>
                 </div>
               ) : (
                 <div className="space-y-3">
@@ -287,14 +305,14 @@ export const VolunteerHome: React.FC<VolunteerHomeProps> = ({
                             </span>
                             <span className="font-mono text-stone-600 text-xs font-bold">{currentId}</span>
                           </div>
-                          <span className="text-xs text-stone-400 font-medium">Just now</span>
+                          <span className="text-xs text-stone-400 font-medium">{sos.createdAt ? new Date(sos.createdAt).toLocaleTimeString() : 'Received now'}</span>
                         </div>
                         <div className="pl-2 space-y-1">
-                          <h4 className="font-bold text-stone-900 text-sm">{sos.userName || 'Pilgrim in Distress'}</h4>
+                          <h4 className="font-bold text-stone-900 text-sm">Nearby emergency request</h4>
                           <p className="text-xs text-stone-500">Emergency: <strong className="uppercase text-stone-800">{sos.category || 'SOS'}</strong></p>
                           <div className="flex items-center text-xs text-red-600 font-semibold mt-1">
                             <MapPin size={13} className="mr-1"/>
-                            {sos.locationText || sos.locationName || 'Ram Ghat Sector B'}
+                                                        About {sos.approximateDistanceMeters != null ? `${(sos.approximateDistanceMeters / 1000).toFixed(1)} km away` : 'nearby'} · exact location shown after acceptance
                           </div>
                           <div className="mt-3 flex space-x-2 pt-2 border-t border-stone-100">
                             <button 

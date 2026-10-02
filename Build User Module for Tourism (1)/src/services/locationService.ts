@@ -1,99 +1,44 @@
-/**
- * Location Service
- * Handles browser/device geolocation, accuracy validation, staleness tracking, and mock fallback for testing.
- */
-
-export interface LocationData {
-  lat: number;
-  lng: number;
-  accuracy: number;
-  timestamp: number;
-  isStale: boolean;
-}
+export interface LocationData { lat: number; lng: number; accuracy: number; timestamp: number; isStale: boolean }
 
 class LocationService {
-  private currentLocation: LocationData = {
-    lat: 19.9975,
-    lng: 73.7898,
-    accuracy: 5,
-    timestamp: Date.now(),
-    isStale: false,
-  };
-
+  private currentLocation: LocationData | null = null;
   private watchId: number | null = null;
-  private listeners: ((loc: LocationData) => void)[] = [];
+  private listeners = new Map<(loc: LocationData) => void, (error: GeolocationPositionError | Error) => void>();
 
-  public getCurrentLocation(): Promise<LocationData> {
-    return new Promise((resolve) => {
-      if (typeof window !== 'undefined' && 'geolocation' in navigator) {
-        navigator.geolocation.getCurrentPosition(
-          (pos) => {
-            this.currentLocation = {
-              lat: pos.coords.latitude,
-              lng: pos.coords.longitude,
-              accuracy: pos.coords.accuracy || 10,
-              timestamp: pos.timestamp || Date.now(),
-              isStale: false,
-            };
-            resolve(this.currentLocation);
-          },
-          (err) => {
-            console.warn('Geolocation warning, fallback to default Kumbh coordinates:', err.message);
-            resolve(this.currentLocation);
-          },
-          { enableHighAccuracy: true, timeout: 5000, maximumAge: 10000 }
-        );
-      } else {
-        resolve(this.currentLocation);
-      }
+  public getCurrentLocation(maxAccuracy = 100): Promise<LocationData> {
+    return new Promise((resolve, reject) => {
+      if (typeof navigator === 'undefined' || !navigator.geolocation) return reject(new Error('Location services are unavailable on this device.'));
+      navigator.geolocation.getCurrentPosition((pos) => {
+        const loc = this.toLocation(pos);
+        this.currentLocation = loc;
+        if (loc.accuracy > maxAccuracy) return reject(new Error(`GPS accuracy is too low (${Math.round(loc.accuracy)} m). Move to an open area and retry.`));
+        resolve(loc);
+      }, (err) => reject(this.locationError(err)), { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
     });
   }
 
-  public watchLocation(callback: (loc: LocationData) => void): () => void {
-    this.listeners.push(callback);
-    callback(this.currentLocation);
-
-    if (typeof window !== 'undefined' && 'geolocation' in navigator && !this.watchId) {
-      this.watchId = navigator.geolocation.watchPosition(
-        (pos) => {
-          this.currentLocation = {
-            lat: pos.coords.latitude,
-            lng: pos.coords.longitude,
-            accuracy: pos.coords.accuracy || 10,
-            timestamp: pos.timestamp || Date.now(),
-            isStale: false,
-          };
-          this.notifyListeners();
-        },
-        (err) => {
-          console.warn('Watch location error:', err.message);
-        },
-        { enableHighAccuracy: true, timeout: 10000, maximumAge: 5000 }
-      );
+  public watchLocation(callback: (loc: LocationData) => void, onError: (error: GeolocationPositionError | Error) => void = () => {}): () => void {
+    if (typeof navigator === 'undefined' || !navigator.geolocation) { onError(new Error('Location services are unavailable on this device.')); return () => {}; }
+    this.listeners.set(callback, onError);
+    if (this.watchId === null) {
+      this.watchId = navigator.geolocation.watchPosition((pos) => {
+        this.currentLocation = this.toLocation(pos);
+        this.listeners.forEach((_onError, listener) => listener(this.currentLocation!));
+      }, (err) => this.listeners.forEach((onError) => onError(this.locationError(err))), { enableHighAccuracy: true, timeout: 15000, maximumAge: 5000 });
     }
-
     return () => {
-      this.listeners = this.listeners.filter((l) => l !== callback);
-      if (this.listeners.length === 0 && this.watchId !== null) {
-        navigator.geolocation.clearWatch(this.watchId);
-        this.watchId = null;
-      }
+      this.listeners.delete(callback);
+      if (!this.listeners.size && this.watchId !== null) { navigator.geolocation.clearWatch(this.watchId); this.watchId = null; }
     };
   }
 
-  private notifyListeners() {
-    for (const listener of this.listeners) {
-      listener(this.currentLocation);
-    }
-  }
-
-  public simulateMovement(latDelta: number, lngDelta: number) {
-    this.currentLocation.lat += latDelta;
-    this.currentLocation.lng += lngDelta;
-    this.currentLocation.timestamp = Date.now();
-    this.currentLocation.isStale = false;
-    this.notifyListeners();
+  public getCachedLocation() { return this.currentLocation; }
+  private toLocation(pos: GeolocationPosition): LocationData { return { lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy, timestamp: pos.timestamp || Date.now(), isStale: false }; }
+  private locationError(err: GeolocationPositionError) {
+    if (err.code === err.PERMISSION_DENIED) return new Error('Location permission was denied. Enable location access to send an SOS with your precise position.');
+    if (err.code === err.POSITION_UNAVAILABLE) return new Error('GPS location is unavailable. Move to an area with a clear sky view and retry.');
+    if (err.code === err.TIMEOUT) return new Error('GPS timed out. Please retry in a moment.');
+    return new Error(err.message || 'Unable to determine your GPS location.');
   }
 }
-
 export const locationService = new LocationService();
