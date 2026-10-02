@@ -1,0 +1,10 @@
+{
+  "description": "Empowering tourists at Kumbh Mela 2027, this platform offers real-time crowd updates, event information, smart routing, and emergency services for a seamless experience.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
