@@ -20,7 +20,13 @@ const emergencyRoutes    = require('./routes/emergency.routes');
 const lostFoundRoutes    = require('./routes/lostFound.routes');
 const aiRoutes           = require('./routes/ai.routes');
 const mapRoutes          = require('./routes/map.routes');
-const volunteerRoutes    = require('../../Volunteer/Backend/volunteer.routes.js');
+const sosRoutes         = require('./routes/sos.routes');
+const crowdRoutes       = require('./routes/crowd.routes');
+const geofenceRoutes    = require('./routes/geofence.routes');
+const incidentRoutes    = require('./routes/incident.routes');
+const taskRoutes        = require('./routes/task.routes');
+const dutyRoutes        = require('./routes/duty.routes');
+const volunteerProfileRoutes = require('./routes/volunteer.routes');
 
 // ─── App Setup ────────────────────────────────────────────────────────────────
 const app = express();
@@ -34,6 +40,7 @@ const io = new Server(server, {
     methods: ["GET", "POST"]
   }
 });
+app.set('io', io);
 
 // Socket.io Events Setup
 io.on('connection', (socket) => {
@@ -124,7 +131,13 @@ app.use(`${API}/emergency`,     emergencyRoutes);
 app.use(`${API}/lost-found`,    lostFoundRoutes);
 app.use(`${API}/ai`,            aiRoutes);
 app.use(`${API}/map`,           mapRoutes);
-app.use(`${API}/volunteers`,    volunteerRoutes);
+app.use(`${API}/sos`,           sosRoutes);
+app.use(`${API}/crowd`,         crowdRoutes);
+app.use(`${API}/geofence`,      geofenceRoutes);
+app.use(`${API}/incidents`,     incidentRoutes);
+app.use(`${API}/tasks`,         taskRoutes);
+app.use(`${API}/duties`,        dutyRoutes);
+app.use(`${API}/volunteers`,    volunteerProfileRoutes);
 
 // ─── Health Check ─────────────────────────────────────────────────────────────
 app.get('/health', (req, res) => {
